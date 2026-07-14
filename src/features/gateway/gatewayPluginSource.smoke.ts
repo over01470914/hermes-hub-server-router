@@ -28,17 +28,17 @@ assert.equal(
   'https://github.com/over01470914/hermes-hub-gateway-plugin',
 )
 assert.deepEqual(gatewayPluginReleaseArtifact, {
-  commit: 'd238bb8549a8abc2da336102d3139e2d795c17bc',
+  commit: 'a724f077c22f2a48d6eb32018c985d0129f39824',
   installerBytes: 68180,
   installerSha256: '7ef66b188b13d1e3f4c4f38662b0076802e5bc8e4eb97a6ef0051aef92a3a823',
 })
 assert.deepEqual(gatewayPluginReleaseUrls, {
   sourceUrl:
-    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/d238bb8549a8abc2da336102d3139e2d795c17bc/',
+    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/a724f077c22f2a48d6eb32018c985d0129f39824/',
   installerUrl:
-    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/d238bb8549a8abc2da336102d3139e2d795c17bc/install.mjs',
+    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/a724f077c22f2a48d6eb32018c985d0129f39824/install.mjs',
   manifestUrl:
-    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/d238bb8549a8abc2da336102d3139e2d795c17bc/package-manifest.json',
+    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/a724f077c22f2a48d6eb32018c985d0129f39824/package-manifest.json',
 })
 
 interface PackageManifest {

@@ -74,26 +74,21 @@ assert.equal(
 )
 assert.match(
   pathRequest.prompt,
-  /https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/d238bb8549a8abc2da336102d3139e2d795c17bc\/install\.mjs/,
+  /https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/a724f077c22f2a48d6eb32018c985d0129f39824\/install\.mjs/,
   'Gateway bootstrap must use the Router-build-pinned public GitHub installer'
 )
-assert.match(
-  pathRequest.prompt,
-  /--source-base "https:\/\/router\.example\.test\/router-dev\/apps\/hermes-hub-gateway-plugin\/"/,
-  'optional loopback helper must preserve the configured Router base path'
-)
-assert.match(pathRequest.prompt, /Read https:\/\/router\.example\.test\/router-dev\/router\/health/)
-assert.match(pathRequest.prompt, /normal Windows, macOS, or Linux host/)
-assert.match(pathRequest.prompt, /Never guess or hard-code a username, drive letter, home directory, checkout path/)
+assert.match(pathRequest.prompt, /GET https:\/\/router\.example\.test\/router-dev\/router\/health/)
+assert.match(pathRequest.prompt, /Never guess or hard-code a username, drive, home, checkout/)
 assert.match(pathRequest.prompt, /hermes config path/)
 assert.match(pathRequest.prompt, /node "<verified-installer-path>"/)
-assert.match(pathRequest.prompt, /Optional loopback development helper/)
-assert.match(pathRequest.prompt, /helper is not a production dependency/)
+assert.match(pathRequest.prompt, /Do not call POST \/router\/pairing\/approve/)
+assert.match(pathRequest.prompt, /401, 409, 502, or another 5xx/)
+assert.match(pathRequest.prompt, /Do not probe, retry, or call an alternative endpoint/)
 assert.match(pathRequest.prompt, /Installer bytes: 68180/)
 assert.match(pathRequest.prompt, /Installer SHA-256: 7ef66b188b13d1e3f4c4f38662b0076802e5bc8e4eb97a6ef0051aef92a3a823/)
-assert.match(pathRequest.prompt, /verify the exact byte count and SHA-256.*display and inspect the complete installer/s)
-assert.match(pathRequest.prompt, /--source-base "https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/d238bb8549a8abc2da336102d3139e2d795c17bc\/"/)
-assert.doesNotMatch(pathRequest.prompt, /winget install|requires Git for Windows/)
+assert.match(pathRequest.prompt, /Verify the raw file has the exact byte count and lowercase SHA-256/)
+assert.match(pathRequest.prompt, /--source-base "https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/a724f077c22f2a48d6eb32018c985d0129f39824\/"/)
+assert.doesNotMatch(pathRequest.prompt, /winget install|requires Git for Windows|corepack|pnpm|hermes gateway stop/)
 assert.doesNotMatch(pathRequest.prompt, /[A-Za-z]:\\|\/Users\/|\/home\//)
 assert.doesNotMatch(pathRequest.prompt, /\/apps\/server-router/)
 

@@ -94,13 +94,14 @@ assuming the Router checkout layout or deployment base path.
 
 The pairing prompt bootstraps from an immutable Gateway repository commit and
 pins the installer's exact byte count and SHA-256. It downloads without
-execution to an OS-selected temporary location, verifies and displays the
-complete installer, and only then offers one Node.js/Hermes install command.
+execution to an OS-selected temporary location, verifies the raw bytes, and
+then runs one direct Node.js/Hermes install command. It forbids manual approve
+probes, retries, and alternative recovery commands after unexpected HTTP or
+process errors.
 The installer discovers Hermes through CLI arguments, environment, PATH, and
 `hermes config path`; it does not assume a username, drive letter, home path,
 checkout location, shell, or service manager. Git and pnpm are not production
-dependencies. The pnpm launcher remains only an optional same-host loopback
-development helper.
+dependencies.
 The Router accepts both prefixed requests and requests whose trusted reverse
 proxy has already removed that prefix.
 
