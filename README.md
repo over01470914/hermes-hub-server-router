@@ -93,15 +93,29 @@ An Agent uses the public content-addressed release in production without
 assuming the Router checkout layout or deployment base path.
 
 The pairing prompt bootstraps from an immutable Gateway repository commit and
-pins the installer's exact byte count and SHA-256. It downloads without
-execution to an OS-selected temporary location, verifies the raw bytes, and
-then runs one direct Node.js/Hermes install command. It forbids manual approve
+pins the installer's exact byte count and SHA-256. The Agent writes one new
+temporary `.mjs` helper instead of embedding JavaScript in a shell command; the
+helper uses only Node.js built-in APIs to download without execution, verifies
+the raw bytes, and then runs one direct child with shell execution disabled. It
+forbids manual approve
 probes, retries, and alternative recovery commands after unexpected HTTP or
 process errors.
+When an Agent terminal supports execution permission modes, the prompt requires
+the first helper invocation to permit loopback HTTP, public HTTPS, OS-temp
+writes, and host plugin installation instead of probing in a network-isolated
+sandbox and retrying.
+The helper checks only that the approval credential reached its environment and
+never prints it. Installer failures preserve the last official stderr message
+after removing credentials, token-like values, and absolute paths, so operators
+can distinguish credential, ACL, lifecycle, and network failures without
+exposing secrets or host paths.
 The installer discovers Hermes through CLI arguments, environment, PATH, and
 `hermes config path`; it does not assume a username, drive letter, home path,
 checkout location, shell, or service manager. Git and pnpm are not production
 dependencies.
+The Agent-side preflight uses `HERMES_COMMAND` when the host launcher provides
+it and otherwise resolves `hermes` from PATH; the pairing prompt never embeds a
+host-specific executable path.
 The Router accepts both prefixed requests and requests whose trusted reverse
 proxy has already removed that prefix.
 
