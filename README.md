@@ -40,7 +40,9 @@ pnpm router:dev
 `router:init` generates it once in the ignored repository-root `.env`, and
 `router:dev` automatically initializes and loads that file. Normal starts
 reuse the existing value. Explicitly rotate it with
-`pnpm router:rotate-approval-token`, restart the Router, and provide the new
+`pnpm router:rotate-approval-token`, or clear it with
+`pnpm router:clear-approval-token` before the next init/run creates a new
+value. Restart the Router after either action and provide the new
 value to later one-shot Gateway installer approvals. Never place the value in
 source, command arguments, logs, pairing prompts, or `.workspace/local.env`.
 Managed Router installation creates the same secret in its private Router

@@ -9,6 +9,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  clearRouterApprovalToken,
   ensureRouterEnvFile,
   loadRouterEnvFile,
   preflightRouterStart,
@@ -71,6 +72,16 @@ try {
   ensureRouterEnvFile(envFile, { platform: process.platform })
   assert.match(readFileSync(envFile, 'utf8'), /^UNCHANGED=value\nHERMES_HUB_AGENT_APPROVAL_TOKEN=d{64}\n$/)
 
+  const cleared = clearRouterApprovalToken(envFile, { platform: process.platform })
+  assert.equal(cleared.cleared, true)
+  assert.equal(readFileSync(envFile, 'utf8'), 'UNCHANGED=value\n')
+  const regenerated = ensureRouterEnvFile(envFile, {
+    platform: process.platform,
+    tokenFactory: () => 'g'.repeat(64),
+  })
+  assert.equal(regenerated.created, true)
+  assert.match(readFileSync(envFile, 'utf8'), /^UNCHANGED=value\nHERMES_HUB_AGENT_APPROVAL_TOKEN=g{64}\n$/)
+
   if (process.platform === 'win32') {
     const acl = spawnSync('powershell.exe', [
       '-NoLogo',
@@ -100,6 +111,9 @@ try {
     () => ensureRouterEnvFile(duplicateEnvFile, { platform: process.platform }),
     /appears more than once/,
   )
+  const duplicateClear = clearRouterApprovalToken(duplicateEnvFile, { platform: process.platform })
+  assert.equal(duplicateClear.cleared, true)
+  assert.equal(readFileSync(duplicateEnvFile, 'utf8'), '\n')
 
   const shortEnvFile = join(workdir, 'short.env')
   writeFileSync(shortEnvFile, 'HERMES_HUB_AGENT_APPROVAL_TOKEN=short\n', 'utf8')
@@ -135,6 +149,26 @@ try {
   assert.notEqual(rotatedToken, initialToken)
   assert.equal(cliRotated.stdout.includes(rotatedToken), false)
   assert.equal(cliRotated.stderr.includes(rotatedToken), false)
+  const cliCleared = spawnSync(process.execPath, [scriptPath, 'clear-approval-token', '--router-env', cliEnvFile], {
+    cwd: workdir,
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+  assert.equal(cliCleared.status, 0)
+  const clearedCliEnvironment = loadRouterEnvFile(cliEnvFile, {})
+  assert.equal('HERMES_HUB_AGENT_APPROVAL_TOKEN' in clearedCliEnvironment, false)
+  assert.equal(cliCleared.stdout.includes(rotatedToken), false)
+  assert.equal(cliCleared.stderr.includes(rotatedToken), false)
+  const cliRegenerated = spawnSync(process.execPath, [scriptPath, 'init', '--router-env', cliEnvFile], {
+    cwd: workdir,
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+  assert.equal(cliRegenerated.status, 0)
+  const regeneratedCliToken = loadRouterEnvFile(cliEnvFile, {}).HERMES_HUB_AGENT_APPROVAL_TOKEN
+  assert.notEqual(regeneratedCliToken, rotatedToken)
+  assert.equal(cliRegenerated.stdout.includes(regeneratedCliToken), false)
+  assert.equal(cliRegenerated.stderr.includes(regeneratedCliToken), false)
 
   const legacy = await listenHealth({
     ok: true,
@@ -188,12 +222,14 @@ try {
       'first initialization generates a private approval token',
       'normal initialization reuses the existing token',
       'explicit rotation replaces the token without printing it',
+      'explicit local clearing removes every approval token entry without printing it',
+      'the next initialization creates one new random approval token after clearing',
       'the Router process environment loads the persisted value',
       'unrelated environment entries survive initialization',
       'duplicate approval token entries fail closed',
       'invalid existing approval tokens fail closed instead of rotating silently',
       'non-file environment targets fail closed before reading',
-      'CLI initialization and rotation never print generated token values',
+      'CLI initialization, rotation, and clearing never print token values',
       'startup preflight distinguishes legacy and Gateway-only Router listeners',
       'startup preflight accepts an available configured port',
       ...(process.platform === 'win32' ? ['the environment file has a non-inherited private Windows ACL'] : []),

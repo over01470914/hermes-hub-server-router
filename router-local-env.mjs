@@ -159,6 +159,22 @@ export function ensureRouterEnvFile(path, options = {}) {
   return { created: entries.length === 0, rotated: rotate && entries.length === 1, path }
 }
 
+export function clearRouterApprovalToken(path, options = {}) {
+  if (!existsSync(path)) return { cleared: false, path }
+  hardenPrivateEnvFile(path, options)
+  const lines = envLines(readFileSync(path, 'utf8'))
+  const entries = approvalTokenEntries(lines)
+  if (entries.length === 0) return { cleared: false, path }
+
+  // Remove every matching entry rather than failing on duplicates. This is an
+  // explicit local recovery action; the next init/run creates exactly one new
+  // token and the normal startup path remains fail-closed for duplicates.
+  const retained = lines.filter(line => !line.startsWith(`${approvalTokenKey}=`))
+  while (retained.length > 0 && retained.at(-1) === '') retained.pop()
+  writePrivateEnvFile(path, `${retained.join('\n')}\n`, options)
+  return { cleared: true, path }
+}
+
 export function loadRouterEnvFile(path, baseEnvironment = process.env) {
   const environment = { ...baseEnvironment }
   const lines = envLines(readFileSync(path, 'utf8'))
@@ -266,13 +282,15 @@ function usage() {
     '  node router-local-env.mjs init [--router-env <path>]',
     '  node router-local-env.mjs run [--router-env <path>]',
     '  node router-local-env.mjs rotate-approval-token [--router-env <path>]',
+    '  node router-local-env.mjs clear-approval-token [--router-env <path>]',
     '',
     'Hermes Hub monorepo usage:',
     '  node apps/server-router/router-local-env.mjs init [--router-env <path>]',
     '  node apps/server-router/router-local-env.mjs run [--router-env <path>]',
     '  node apps/server-router/router-local-env.mjs rotate-approval-token [--router-env <path>]',
+    '  node apps/server-router/router-local-env.mjs clear-approval-token [--router-env <path>]',
     '',
-    'The token is generated once, never printed, and rotated only by the explicit command.',
+    'The token is generated once, never printed, and rotated or cleared only by explicit local commands.',
   ].join('\n')
 }
 
@@ -330,6 +348,15 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   if (command === 'rotate-approval-token') {
     const result = ensureRouterEnvFile(envFile, { ...options, rotate: true })
     process.stdout.write(`Router approval token rotated in ${result.path}; the value was not printed.\n`)
+    return
+  }
+  if (command === 'clear-approval-token') {
+    const result = clearRouterApprovalToken(envFile, options)
+    process.stdout.write(
+      result.cleared
+        ? `Router approval token cleared from ${result.path}; run init or run to generate a new value.\n`
+        : `Router environment at ${result.path} has no approval token to clear.\n`,
+    )
     return
   }
   if (command === 'run') {
