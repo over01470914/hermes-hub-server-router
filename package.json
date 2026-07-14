@@ -1,0 +1,27 @@
+{
+  "name": "hermes-hub-server-router",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "packageManager": "pnpm@11.11.0",
+  "scripts": {
+    "init:router": "node router-local-env.mjs init",
+    "dev": "node router-local-env.mjs run",
+    "rotate-approval-token": "node router-local-env.mjs rotate-approval-token",
+    "check": "tsc -p tsconfig.json --pretty false",
+    "smoke": "node router-local-env.smoke.mjs && tsx src/features/pairing/pairingStore.capabilities-smoke.ts",
+    "test": "pnpm run check && pnpm run smoke"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.7.3"
+  }
+}
