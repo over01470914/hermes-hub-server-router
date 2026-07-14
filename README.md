@@ -87,18 +87,20 @@ payload names without redirects, enforces byte bounds, verifies SHA-256, and
 only then atomically replaces the served package directory. The Router exposes
 that directory at `apps/hermes-hub-gateway-plugin/` under the configured Router
 base path so a pairing command can bootstrap from a standalone `install.mjs`.
-`GET /router/health` advertises the authoritative source, installer, and
-manifest URLs so an Agent starting from any deployed Router URL can discover
-the correct mapping without assuming the deployment base path.
+`GET /router/health` advertises the optional Router-origin mirror plus the
+immutable public release repository, commit, URLs, installer bytes, and SHA-256.
+An Agent uses the public content-addressed release in production without
+assuming the Router checkout layout or deployment base path.
 
 The pairing prompt bootstraps from an immutable Gateway repository commit and
 pins the installer's exact byte count and SHA-256. It downloads without
-execution, verifies and displays the complete installer, and only then offers
-the install command. Native Windows PowerShell, Node.js, and POSIX curl branches
-are included; none requires Git. Hermes Agent versions whose Windows terminal
-adapter requires Git Bash cannot execute any branch through that adapter, so
-the prompt identifies that limitation accurately and returns the same native
-PowerShell block for the operator to run directly.
+execution to an OS-selected temporary location, verifies and displays the
+complete installer, and only then offers one Node.js/Hermes install command.
+The installer discovers Hermes through CLI arguments, environment, PATH, and
+`hermes config path`; it does not assume a username, drive letter, home path,
+checkout location, shell, or service manager. Git and pnpm are not production
+dependencies. The pnpm launcher remains only an optional same-host loopback
+development helper.
 The Router accepts both prefixed requests and requests whose trusted reverse
 proxy has already removed that prefix.
 

@@ -1,0 +1,80 @@
+{
+  "schemaVersion": "hermes-hub-pairing/v2",
+  "records": [
+    {
+      "schemaVersion": "hermes-hub-pairing/v2",
+      "requestId": "pair_aab42fac-fd9b-4483-b116-bb0c69e236be",
+      "user": "Hermes installation validation",
+      "deviceName": "Hermes validation client",
+      "deviceId": "device_hermes_install_validation",
+      "deviceNonce": "63fe3706-70e2-4cd2-844b-2d688da83782",
+      "devicePublicKey": "prototype-public-key",
+      "routerUrl": "http://127.0.0.1:4320",
+      "capabilities": [
+        "sessions:list",
+        "messages:read",
+        "chat:run"
+      ],
+      "client": {
+        "appName": "Hermes Hub validation",
+        "platform": "Windows"
+      },
+      "createdAt": 1784051183,
+      "expiresAt": 1784051783
+    },
+    {
+      "schemaVersion": "hermes-hub-pairing/v2",
+      "requestId": "pair_01be803b-7bc2-4761-9be9-f9971da05391",
+      "user": "Hermes installation validation",
+      "deviceName": "Hermes validation client",
+      "deviceId": "device_hermes_install_f3ec2be2-ce57-4fed-864a-1bdd5c6dc46d",
+      "deviceNonce": "df937151-0ab3-455c-b4b5-a5e33cf074d0",
+      "devicePublicKey": "prototype-public-key",
+      "routerUrl": "http://127.0.0.1:4320",
+      "capabilities": [
+        "sessions:list",
+        "messages:read",
+        "chat:run"
+      ],
+      "client": {
+        "appName": "Hermes Hub validation",
+        "platform": "Windows"
+      },
+      "createdAt": 1784051374,
+      "expiresAt": 1784053174,
+      "approvedAt": 1784051443,
+      "hermesAgentId": "agent_294e5a51-1b08-418d-8323-be7109eb27b6",
+      "gatewayId": "gw_3f85a846-78a2-4e07-82a5-7963a314f707",
+      "codeHash": "_Fa4bZImYJJTPlYNB8QkjuYbQdnDX5X2gqlPRaIJ2cE",
+      "gatewayTokenHash": "46o_8UavZOLhlcEec9DuzaKLO_1FHZmH8UNzYYmccs8",
+      "gatewayCredentialState": "provisional"
+    },
+    {
+      "schemaVersion": "hermes-hub-pairing/v2",
+      "requestId": "pair_0f8cfbb9-6d89-4bb0-8840-4672e0cb4c7e",
+      "user": "Hermes installation validation",
+      "deviceName": "Hermes validation client",
+      "deviceId": "device_hermes_install_70ebe795-97d6-412d-9970-d508ecc76ed2",
+      "deviceNonce": "718e0de5-5294-4db7-b653-2618108e3bb4",
+      "devicePublicKey": "prototype-public-key",
+      "routerUrl": "http://127.0.0.1:4320",
+      "capabilities": [
+        "sessions:list",
+        "messages:read",
+        "chat:run"
+      ],
+      "client": {
+        "appName": "Hermes Hub validation",
+        "platform": "Windows"
+      },
+      "createdAt": 1784051728,
+      "expiresAt": 1784053528,
+      "approvedAt": 1784051847,
+      "hermesAgentId": "agent_294e5a51-1b08-418d-8323-be7109eb27b6",
+      "gatewayId": "gw_3f85a846-78a2-4e07-82a5-7963a314f707",
+      "codeHash": "gBYo-TWtuo9-QkWeHcyfpP7u7xFCbRYq5T6444fngQ8",
+      "gatewayTokenHash": "46o_8UavZOLhlcEec9DuzaKLO_1FHZmH8UNzYYmccs8",
+      "gatewayCredentialState": "provisional"
+    }
+  ]
+}

@@ -29,7 +29,7 @@ interface RouterProcess {
 
 function startRouter(repositoryRoot: string, environment: NodeJS.ProcessEnv): RouterProcess {
   const tsxCli = join(repositoryRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs')
-  const routerEntry = join(repositoryRoot, 'apps', 'server-router', 'src', 'bridgeServer.ts')
+  const routerEntry = join(repositoryRoot, 'apps', 'hermes-hub-server-router', 'src', 'bridgeServer.ts')
   const child = spawn(process.execPath, [tsxCli, routerEntry], {
     cwd: repositoryRoot,
     env: environment,
@@ -69,7 +69,9 @@ async function stopRouter(router: RouterProcess): Promise<void> {
 }
 
 function windowsRoot(): string {
-  return process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows'
+  const root = process.env.SystemRoot || process.env.WINDIR
+  assert.ok(root, 'Windows system root must be available')
+  return root
 }
 
 function windowsAcl(path: string): Array<{ sid: string; type: string; rights: string; inherited: boolean }> {

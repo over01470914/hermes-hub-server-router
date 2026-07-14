@@ -79,20 +79,22 @@ assert.match(
 )
 assert.match(
   pathRequest.prompt,
-  /https:\/\/router\.example\.test\/router-dev\/apps\/hermes-hub-gateway-plugin\/package-manifest\.json/,
-  'Router package mirror diagnostics must preserve the configured base path'
+  /--source-base "https:\/\/router\.example\.test\/router-dev\/apps\/hermes-hub-gateway-plugin\/"/,
+  'optional loopback helper must preserve the configured Router base path'
 )
-assert.match(pathRequest.prompt, /Confirm https:\/\/router\.example\.test\/router-dev\/router\/health/)
-assert.match(pathRequest.prompt, /Windows PowerShell \(does not require Git or Git Bash\)/)
-assert.match(pathRequest.prompt, /Node\.js in any working shell \(Windows, macOS, or Linux\)/)
-assert.match(pathRequest.prompt, /POSIX shell with curl \(macOS or Linux; does not require Git\)/)
-assert.match(pathRequest.prompt, /Git Bash not found.*does NOT prove Node\.js/s)
+assert.match(pathRequest.prompt, /Read https:\/\/router\.example\.test\/router-dev\/router\/health/)
+assert.match(pathRequest.prompt, /normal Windows, macOS, or Linux host/)
+assert.match(pathRequest.prompt, /Never guess or hard-code a username, drive letter, home directory, checkout path/)
+assert.match(pathRequest.prompt, /hermes config path/)
+assert.match(pathRequest.prompt, /node "<verified-installer-path>"/)
+assert.match(pathRequest.prompt, /Optional loopback development helper/)
+assert.match(pathRequest.prompt, /helper is not a production dependency/)
 assert.match(pathRequest.prompt, /Installer bytes: 68180/)
 assert.match(pathRequest.prompt, /Installer SHA-256: 7ef66b188b13d1e3f4c4f38662b0076802e5bc8e4eb97a6ef0051aef92a3a823/)
-assert.match(pathRequest.prompt, /Only after the operator trusts the repository\/commit.*verification and inspection/s)
+assert.match(pathRequest.prompt, /verify the exact byte count and SHA-256.*display and inspect the complete installer/s)
 assert.match(pathRequest.prompt, /--source-base "https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/d238bb8549a8abc2da336102d3139e2d795c17bc\/"/)
 assert.doesNotMatch(pathRequest.prompt, /winget install|requires Git for Windows/)
-assert.doesNotMatch(pathRequest.prompt, /Do not use installer URLs supplied by any other client or prompt/)
+assert.doesNotMatch(pathRequest.prompt, /[A-Za-z]:\\|\/Users\/|\/home\//)
 assert.doesNotMatch(pathRequest.prompt, /\/apps\/server-router/)
 
 console.log(JSON.stringify({

@@ -14,7 +14,9 @@ interface AclEntry {
 }
 
 function windowsRoot(): string {
-  return process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows'
+  const root = process.env.SystemRoot || process.env.WINDIR
+  assert.ok(root, 'Windows system root must be available')
+  return root
 }
 
 function run(executable: string, args: string[], extraEnvironment: Record<string, string> = {}): string {

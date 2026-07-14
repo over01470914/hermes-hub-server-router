@@ -31,7 +31,9 @@ const windowsAdministratorsSid = 'S-1-5-32-544'
 let cachedWindowsUserSid: string | undefined
 
 function windowsRoot(): string {
-  return process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows'
+  const root = process.env.SystemRoot || process.env.WINDIR
+  if (!root) throw new Error('Windows system root is unavailable')
+  return root
 }
 
 function windowsChildEnvironment(extra: Record<string, string> = {}): NodeJS.ProcessEnv {

@@ -9,6 +9,12 @@ import { fileURLToPath } from 'node:url'
 
 import { WebSocket } from 'ws'
 
+import {
+  gatewayPluginReleaseArtifact,
+  gatewayPluginReleaseUrls,
+  gatewayPluginRepositoryUrl,
+} from './gatewayPluginSource.js'
+
 const delay = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds))
 
 async function reserveLoopbackPort(): Promise<number> {
@@ -225,12 +231,30 @@ try {
   await waitForRouter(baseUrl, router)
 
   const health = await fetchJson<{
-    gatewayPlugin: { sourceUrl: string; installerUrl: string; manifestUrl: string }
+    gatewayPlugin: {
+      sourceUrl: string
+      installerUrl: string
+      manifestUrl: string
+      release: {
+        repositoryUrl: string
+        commit: string
+        installerBytes: number
+        installerSha256: string
+        sourceUrl: string
+        installerUrl: string
+        manifestUrl: string
+      }
+    }
   }>(`${baseUrl}/router/health`)
   assert.deepEqual(health.gatewayPlugin, {
     sourceUrl: `${baseUrl}/apps/hermes-hub-gateway-plugin/`,
     installerUrl: `${baseUrl}/apps/hermes-hub-gateway-plugin/install.mjs`,
     manifestUrl: `${baseUrl}/apps/hermes-hub-gateway-plugin/package-manifest.json`,
+    release: {
+      repositoryUrl: gatewayPluginRepositoryUrl,
+      ...gatewayPluginReleaseArtifact,
+      ...gatewayPluginReleaseUrls,
+    },
   })
   const advertisedInstaller = await fetch(health.gatewayPlugin.installerUrl)
   assert.equal(advertisedInstaller.status, 200)

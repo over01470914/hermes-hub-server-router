@@ -21,6 +21,12 @@ import { fileURLToPath } from 'node:url'
 
 const approvalTokenKey = 'HERMES_HUB_AGENT_APPROVAL_TOKEN'
 
+function windowsSystemExecutable(name) {
+  const windowsRoot = process.env.SystemRoot || process.env.WINDIR
+  if (!windowsRoot) throw new Error('Windows system root is unavailable.')
+  return join(windowsRoot, 'System32', name)
+}
+
 function parseArgs(argv) {
   const options = { _: [] }
   for (let index = 0; index < argv.length; index += 1) {
@@ -50,7 +56,7 @@ let cachedWindowsUserSid = ''
 
 function windowsUserSid(commandRunner = spawnSync) {
   if (cachedWindowsUserSid) return cachedWindowsUserSid
-  const result = commandRunner('whoami.exe', ['/user', '/fo', 'csv', '/nh'], {
+  const result = commandRunner(windowsSystemExecutable('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], {
     encoding: 'utf8',
     windowsHide: true,
   })
@@ -74,7 +80,7 @@ export function hardenPrivateEnvFile(path, options = {}) {
       [path, '/grant:r', `*${windowsUserSid(commandRunner)}:F`],
     ]
     for (const commandArgs of commands) {
-      const result = commandRunner('icacls.exe', commandArgs, {
+      const result = commandRunner(windowsSystemExecutable('icacls.exe'), commandArgs, {
         encoding: 'utf8',
         windowsHide: true,
       })

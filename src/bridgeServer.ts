@@ -7,11 +7,18 @@ import { BoundedSseWriter } from './core/http/boundedSseWriter.js'
 import { routerBasePath, stripRouterBasePath } from './core/http/routerBasePath.js'
 import { errorMessage, logRouter, type RouterLogLevel } from './core/observability/routerLogger.js'
 import { readPrivateTextFileSync, writePrivateTextFileAtomicSync } from './core/persistence/privateStateFile.js'
+import { resolveRouterStatePaths } from './core/persistence/routerStatePaths.js'
 import { elapsedMs, encodeSseEvent, normalizeBootstrapQuery, requestId, sseHeaders, type GatewayRequestMetrics, type RpcStreamFrame } from './core/protocol/bridgeProtocol.js'
 import { readBridgeConfig, issueBridgeToken, verifyBridgeToken, bearerToken, type BridgeTokenPayload } from './core/security/bridgeAuth.js'
 import { requireGatewayBoundBridge } from './core/security/bridgePolicy.js'
 import { DiagnosticsPayloadError, normalizeDiagnosticsReceipt, summarizeDiagnosticsReceipt } from './features/diagnostics/diagnosticsReceipt.js'
-import { gatewayPluginPublicUrls, loadGatewayPluginSource } from './features/gateway/gatewayPluginSource.js'
+import {
+  gatewayPluginPublicUrls,
+  gatewayPluginReleaseArtifact,
+  gatewayPluginReleaseUrls,
+  gatewayPluginRepositoryUrl,
+  loadGatewayPluginSource,
+} from './features/gateway/gatewayPluginSource.js'
 import { GatewayRegistry, type GatewayActivationReservation, type GatewayRpcResponse } from './features/gateway/gatewayRegistry.js'
 import { HermesGatewayRepository } from './features/gateway/hermesGatewayRepository.js'
 import { PairingRateLimiter, type PairingRateLimitRule } from './features/pairing/pairingRateLimiter.js'
@@ -38,13 +45,11 @@ const port = Number(process.env.HERMES_HUB_ROUTER_PORT || 4320)
 const host = process.env.HERMES_HUB_ROUTER_HOST || '0.0.0.0'
 const routerUrl = (process.env.HERMES_HUB_ROUTER_URL || `http://127.0.0.1:${port}`).replace(/\/$/, '')
 const configuredRouterBasePath = routerBasePath(routerUrl)
-const diagnosticsDir = process.env.HERMES_HUB_DIAGNOSTICS_DIR || join(process.cwd(), 'diagnostics')
-const pairingStorePath = process.env.HERMES_HUB_PAIRING_STORE_PATH || join(process.cwd(), '.hermes-hub-private', 'pairing-store.json')
+const { diagnosticsDir, pairingStorePath, sessionMetadataStorePath } = resolveRouterStatePaths(import.meta.url)
 const agentApprovalToken = process.env.HERMES_HUB_AGENT_APPROVAL_TOKEN || ''
 if (agentApprovalToken.length < 32) {
   throw new Error('HERMES_HUB_AGENT_APPROVAL_TOKEN must be configured with at least 32 characters')
 }
-const sessionMetadataStorePath = process.env.HERMES_HUB_SESSION_METADATA_STORE_PATH || join(process.cwd(), 'session-metadata.json')
 const defaultChatRunTimeoutMs = 180_000
 const chatRunProxyTimeoutBufferMs = 30_000
 const chatRunSseKeepAliveMs = 15_000
@@ -1568,7 +1573,14 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
       hermesAgents: new Set(gateways.map(item => item.hermesAgentId)).size,
       hermesAgentsOnline: onlineAgents.size,
       pairing: 'prompt-code-claim/v2',
-      gatewayPlugin: gatewayPluginPublicUrls(routerUrl),
+      gatewayPlugin: {
+        ...gatewayPluginPublicUrls(routerUrl),
+        release: {
+          repositoryUrl: gatewayPluginRepositoryUrl,
+          ...gatewayPluginReleaseArtifact,
+          ...gatewayPluginReleaseUrls,
+        },
+      },
       debugGateway: { enabled: Boolean(debugGateway) },
     })
     return true
