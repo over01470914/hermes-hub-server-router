@@ -182,6 +182,7 @@ try {
     '--router-env', cliEnvFile,
     '--installer', verifiedInstaller,
     '--router', 'http://127.0.0.1:4320',
+    '--source-base', 'http://127.0.0.1:4320/apps/hermes-hub-gateway-plugin/',
     '--request-id', 'pair_gateway_launcher_smoke',
   ], {
     cwd: workdir,
@@ -195,6 +196,7 @@ try {
   assert.deepEqual(installerLaunch.args, [
     '--router', 'http://127.0.0.1:4320',
     '--request-id', 'pair_gateway_launcher_smoke',
+    '--source-base', 'http://127.0.0.1:4320/apps/hermes-hub-gateway-plugin/',
   ])
   assert.equal(launchedInstaller.stdout.includes(regeneratedCliToken), false)
   assert.equal(launchedInstaller.stderr.includes(regeneratedCliToken), false)
@@ -214,6 +216,23 @@ try {
   assert.match(remoteLauncher.stderr, /only sends Router approval to an HTTP\(S\) loopback Router URL/)
   assert.equal(remoteLauncher.stdout.includes(regeneratedCliToken), false)
   assert.equal(remoteLauncher.stderr.includes(regeneratedCliToken), false)
+  const wrongMirror = spawnSync(process.execPath, [
+    scriptPath,
+    'pair-gateway',
+    '--router-env', cliEnvFile,
+    '--installer', verifiedInstaller,
+    '--router', 'http://127.0.0.1:4320',
+    '--source-base', 'http://127.0.0.1:4320/untrusted-package/',
+    '--request-id', 'pair_gateway_launcher_smoke',
+  ], {
+    cwd: workdir,
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+  assert.notEqual(wrongMirror.status, 0)
+  assert.match(wrongMirror.stderr, /only accepts the exact package mirror advertised by its loopback Router/)
+  assert.equal(wrongMirror.stdout.includes(regeneratedCliToken), false)
+  assert.equal(wrongMirror.stderr.includes(regeneratedCliToken), false)
 
   const legacy = await listenHealth({
     ok: true,
@@ -275,7 +294,7 @@ try {
       'invalid existing approval tokens fail closed instead of rotating silently',
       'non-file environment targets fail closed before reading',
       'CLI initialization, rotation, and clearing never print token values',
-      'the local Gateway launcher injects the token only into a verified installer child and rejects remote Router URLs',
+      'the local Gateway launcher injects the token only into a verified installer child and rejects remote Router URLs or untrusted package mirrors',
       'startup preflight distinguishes legacy and Gateway-only Router listeners',
       'startup preflight accepts an available configured port',
       ...(process.platform === 'win32' ? ['the environment file has a non-inherited private Windows ACL'] : []),

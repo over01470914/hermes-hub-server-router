@@ -347,7 +347,7 @@ export function buildPairingPrompt(record: PairingRequestRecord): string {
     '   sed -n \'1,$p\' hermes-hub-gateway-install.mjs',
     '',
     '3. Only after the operator trusts the repository/commit and the complete installer has passed byte/hash verification and inspection, install/configure the package, approve this request, restart Hermes Gateway, and wait for it to be online:',
-    `   Local Hermes Hub checkout with a loopback Router: pnpm router:pair-gateway -- --installer $Installer --router '${router}' --request-id '${record.requestId}'`,
+    `   Local Hermes Hub checkout with a loopback Router: pnpm router:pair-gateway -- --installer $Installer --router '${router}' --source-base '${routerGatewayPlugin.sourceUrl}' --request-id '${record.requestId}'`,
     `   Other working shells after the operator has privately provisioned the same token in this installer process: node "hermes-hub-gateway-install.mjs" --router "${router}" --request-id "${record.requestId}" --source-base "${publicGatewayPlugin.sourceUrl}"`,
     '',
     '4. Verify status if needed:',

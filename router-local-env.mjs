@@ -240,6 +240,16 @@ function verifiedInstallerPath(value) {
   return path
 }
 
+function localRouterPackageSourceBase(value, routerUrl) {
+  if (!value) return ''
+  const sourceBase = loopbackRouterUrl(value)
+  const expected = `${routerUrl}/apps/hermes-hub-gateway-plugin`
+  if (sourceBase !== expected) {
+    throw new Error('The local Gateway launcher only accepts the exact package mirror advertised by its loopback Router.')
+  }
+  return `${sourceBase}/`
+}
+
 export async function runApprovedGatewayInstaller(options = {}) {
   const envFile = resolve(options.envFile || defaultEnvFile(process.cwd()))
   const installer = verifiedInstallerPath(options.installer)
@@ -258,11 +268,12 @@ export async function runApprovedGatewayInstaller(options = {}) {
       ? options.routerUrl
       : environment.HERMES_HUB_ROUTER_URL || 'http://127.0.0.1:4320',
   )
-  const child = (options.spawnImpl || spawn)(process.execPath, [
-    installer,
-    '--router', routerUrl,
-    '--request-id', requestId,
-  ], {
+  const sourceBase = localRouterPackageSourceBase(options.sourceBase, routerUrl)
+  const childArgs = [installer, '--router', routerUrl, '--request-id', requestId]
+  if (sourceBase) {
+    childArgs.push('--source-base', sourceBase)
+  }
+  const child = (options.spawnImpl || spawn)(process.execPath, childArgs, {
     cwd: dirname(installer),
     env: environment,
     stdio: options.stdio || 'inherit',
@@ -274,7 +285,7 @@ export async function runApprovedGatewayInstaller(options = {}) {
   })
   if (result.signal) throw new Error(`Gateway installer stopped by ${result.signal}.`)
   if (result.code !== 0) throw new Error(`Gateway installer exited with code ${result.code ?? 1}.`)
-  return { installer, requestId, routerUrl }
+  return { installer, requestId, routerUrl, sourceBase }
 }
 
 async function probeHealth(url, options = {}) {
@@ -346,14 +357,14 @@ function usage() {
     '  node router-local-env.mjs run [--router-env <path>]',
     '  node router-local-env.mjs rotate-approval-token [--router-env <path>]',
     '  node router-local-env.mjs clear-approval-token [--router-env <path>]',
-    '  node router-local-env.mjs pair-gateway --installer <verified-installer-path> --request-id <pair-id> [--router <loopback-url>] [--router-env <path>]',
+    '  node router-local-env.mjs pair-gateway --installer <verified-installer-path> --request-id <pair-id> [--router <loopback-url>] [--source-base <Router package mirror>] [--router-env <path>]',
     '',
     'Hermes Hub monorepo usage:',
     '  node apps/hermes-hub-server-router/router-local-env.mjs init [--router-env <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs run [--router-env <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs rotate-approval-token [--router-env <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs clear-approval-token [--router-env <path>]',
-    '  pnpm router:pair-gateway -- --installer <verified-installer-path> --request-id <pair-id> [--router <loopback-url>]',
+    '  pnpm router:pair-gateway -- --installer <verified-installer-path> --request-id <pair-id> [--router <loopback-url>] [--source-base <Router package mirror>]',
     '',
     'The token is generated once, never printed, and rotated or cleared only by explicit local commands.',
   ].join('\n')
@@ -432,6 +443,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
       installer: textOption(parsed, 'installer'),
       requestId: textOption(parsed, 'request-id'),
       routerUrl: textOption(parsed, 'router'),
+      sourceBase: textOption(parsed, 'source-base'),
     })
     process.stdout.write(`Gateway installer completed for ${result.requestId}; Router approval token was not printed.\n`)
     return

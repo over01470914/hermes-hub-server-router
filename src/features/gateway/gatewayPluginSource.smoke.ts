@@ -29,8 +29,8 @@ assert.equal(
 )
 assert.deepEqual(gatewayPluginReleaseArtifact, {
   commit: 'd238bb8549a8abc2da336102d3139e2d795c17bc',
-  installerBytes: 68180,
-  installerSha256: '7ef66b188b13d1e3f4c4f38662b0076802e5bc8e4eb97a6ef0051aef92a3a823',
+  installerBytes: 68530,
+  installerSha256: '7214d6d9bc8351513966e006c163c23bf5436fe22ebbe280c0544cb61bac41e8',
 })
 assert.deepEqual(gatewayPluginReleaseUrls, {
   sourceUrl:
