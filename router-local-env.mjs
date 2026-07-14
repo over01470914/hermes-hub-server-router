@@ -1,0 +1,349 @@
+#!/usr/bin/env node
+
+import { spawn, spawnSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { createServer as createNetServer } from 'node:net'
+import { fileURLToPath } from 'node:url'
+
+const approvalTokenKey = 'HERMES_HUB_AGENT_APPROVAL_TOKEN'
+
+function parseArgs(argv) {
+  const options = { _: [] }
+  for (let index = 0; index < argv.length; index += 1) {
+    const item = argv[index]
+    if (!item.startsWith('--')) {
+      options._.push(item)
+      continue
+    }
+    const [key, inline] = item.slice(2).split('=', 2)
+    if (inline !== undefined) options[key] = inline
+    else if (argv[index + 1] && !argv[index + 1].startsWith('--')) options[key] = argv[++index]
+    else options[key] = true
+  }
+  return options
+}
+
+function textOption(options, key, fallback = '') {
+  const value = options[key]
+  return typeof value === 'string' && value.length > 0 ? value : fallback
+}
+
+function tokenIsValid(value) {
+  return typeof value === 'string' && value.length >= 32 && !/[\s\r\n]/.test(value)
+}
+
+let cachedWindowsUserSid = ''
+
+function windowsUserSid(commandRunner = spawnSync) {
+  if (cachedWindowsUserSid) return cachedWindowsUserSid
+  const result = commandRunner('whoami.exe', ['/user', '/fo', 'csv', '/nh'], {
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+  const match = result?.status === 0 ? String(result.stdout || '').match(/S-1-[0-9-]+/) : null
+  if (!match) throw new Error('Could not determine the current Windows user for the private Router environment.')
+  cachedWindowsUserSid = match[0]
+  return cachedWindowsUserSid
+}
+
+export function hardenPrivateEnvFile(path, options = {}) {
+  const platform = options.platform || process.platform
+  const stat = lstatSync(path)
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error('Router environment must be a regular local file.')
+  }
+  if (platform === 'win32') {
+    const commandRunner = options.commandRunner || spawnSync
+    const commands = [
+      [path, '/reset'],
+      [path, '/inheritance:r'],
+      [path, '/grant:r', `*${windowsUserSid(commandRunner)}:F`],
+    ]
+    for (const commandArgs of commands) {
+      const result = commandRunner('icacls.exe', commandArgs, {
+        encoding: 'utf8',
+        windowsHide: true,
+      })
+      if (result?.status !== 0) {
+        throw new Error('Could not restrict Windows permissions for the private Router environment.')
+      }
+    }
+    return
+  }
+  chmodSync(path, 0o600)
+  if ((lstatSync(path).mode & 0o077) !== 0) {
+    throw new Error('Could not restrict permissions for the private Router environment.')
+  }
+}
+
+export function writePrivateEnvFile(path, content, options = {}) {
+  const directory = dirname(path)
+  mkdirSync(directory, { recursive: true })
+  if (existsSync(path)) {
+    const existing = lstatSync(path)
+    if (!existing.isFile() || existing.isSymbolicLink()) {
+      throw new Error('Router environment target must be a regular local file.')
+    }
+  }
+  const temporary = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
+  let descriptor
+  try {
+    descriptor = openSync(temporary, 'wx', 0o600)
+    writeFileSync(descriptor, content, 'utf8')
+    fsyncSync(descriptor)
+    closeSync(descriptor)
+    descriptor = undefined
+    hardenPrivateEnvFile(temporary, options)
+    renameSync(temporary, path)
+    hardenPrivateEnvFile(path, options)
+  } finally {
+    if (descriptor !== undefined) {
+      try { closeSync(descriptor) } catch {}
+    }
+    rmSync(temporary, { force: true })
+  }
+}
+
+function envLines(text) {
+  return text ? text.split(/\r?\n/) : []
+}
+
+function approvalTokenEntries(lines) {
+  const prefix = `${approvalTokenKey}=`
+  return lines
+    .map((line, index) => ({ index, line }))
+    .filter(entry => entry.line.startsWith(prefix))
+}
+
+export function ensureRouterEnvFile(path, options = {}) {
+  const rotate = options.rotate === true
+  const tokenFactory = options.tokenFactory || (() => randomBytes(32).toString('hex'))
+  if (existsSync(path)) hardenPrivateEnvFile(path, options)
+  const existingText = existsSync(path) ? readFileSync(path, 'utf8') : ''
+  const lines = envLines(existingText)
+  while (lines.length > 0 && lines.at(-1) === '') lines.pop()
+  const entries = approvalTokenEntries(lines)
+  if (entries.length > 1) {
+    throw new Error(`${approvalTokenKey} appears more than once in the Router environment.`)
+  }
+  if (!rotate && entries.length === 1) {
+    const token = entries[0].line.slice(approvalTokenKey.length + 1)
+    if (!tokenIsValid(token)) {
+      throw new Error(`${approvalTokenKey} must contain at least 32 non-whitespace characters.`)
+    }
+    return { created: false, rotated: false, path }
+  }
+
+  const nextToken = tokenFactory()
+  if (!tokenIsValid(nextToken)) throw new Error('Generated Router approval token is invalid.')
+  const nextLine = `${approvalTokenKey}=${nextToken}`
+  if (entries.length === 1) lines[entries[0].index] = nextLine
+  else {
+    lines.push(nextLine)
+  }
+  writePrivateEnvFile(path, `${lines.join('\n')}\n`, options)
+  return { created: entries.length === 0, rotated: rotate && entries.length === 1, path }
+}
+
+export function loadRouterEnvFile(path, baseEnvironment = process.env) {
+  const environment = { ...baseEnvironment }
+  const lines = envLines(readFileSync(path, 'utf8'))
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index]
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const separator = rawLine.indexOf('=')
+    if (separator <= 0) throw new Error(`Router environment contains an invalid entry at line ${index + 1}.`)
+    const key = rawLine.slice(0, separator)
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error('Router environment contains an invalid key.')
+    environment[key] = rawLine.slice(separator + 1)
+  }
+  return environment
+}
+
+function defaultEnvFile(cwd) {
+  return join(cwd, '.env')
+}
+
+function localProbeHost(host) {
+  if (host === '0.0.0.0' || host === '') return '127.0.0.1'
+  if (host === '::' || host === '[::]') return '::1'
+  return host
+}
+
+function healthProbeUrl(environment, host, port) {
+  const configuredUrl = environment.HERMES_HUB_ROUTER_URL || `http://127.0.0.1:${port}`
+  let basePath
+  try {
+    basePath = new URL(configuredUrl).pathname.replace(/\/+$/, '')
+  } catch {
+    throw new Error('HERMES_HUB_ROUTER_URL must be a valid HTTP(S) URL.')
+  }
+  const probeHost = localProbeHost(host)
+  const authority = probeHost.includes(':') ? `[${probeHost}]` : probeHost
+  return `http://${authority}:${port}${basePath}/router/health`
+}
+
+async function probeHealth(url, options = {}) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 750)
+  try {
+    const response = await (options.fetchImpl || fetch)(url, { signal: controller.signal })
+    let payload
+    try {
+      payload = await response.json()
+    } catch {
+      payload = null
+    }
+    return { reached: true, status: response.status, payload }
+  } catch {
+    return { reached: false }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function assertPortAvailable(host, port, options = {}) {
+  const server = (options.netServerFactory || createNetServer)()
+  await new Promise((resolvePromise, reject) => {
+    server.once('error', error => {
+      const code = error && typeof error === 'object' ? error.code : undefined
+      if (code === 'EADDRINUSE') {
+        reject(new Error(`Router port ${host}:${port} is already in use by a process that did not expose Router health.`))
+        return
+      }
+      reject(error)
+    })
+    server.listen({ host, port, exclusive: true }, () => {
+      server.close(closeError => closeError ? reject(closeError) : resolvePromise())
+    })
+  })
+}
+
+export async function preflightRouterStart(environment, options = {}) {
+  const port = Number(environment.HERMES_HUB_ROUTER_PORT || 4320)
+  const host = environment.HERMES_HUB_ROUTER_HOST || '0.0.0.0'
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error('HERMES_HUB_ROUTER_PORT must be an integer between 1 and 65535.')
+  }
+  const healthUrl = healthProbeUrl(environment, host, port)
+  const health = await probeHealth(healthUrl, options)
+  if (health.reached) {
+    const payload = health.payload && typeof health.payload === 'object' ? health.payload : {}
+    if (payload.service === 'hermes-hub-router') {
+      const current = payload.topology === 'client-router-hermes-hub-gateway-agent' &&
+        payload.pairing === 'prompt-code-claim/v2'
+      const kind = current ? 'Gateway-only Router' : 'legacy Router'
+      throw new Error(
+        `A ${kind} is already running at ${healthUrl}. Stop it before restarting; ` +
+        'the running process has not loaded newly initialized or rotated environment values.',
+      )
+    }
+    throw new Error(`Router port ${host}:${port} is occupied by another HTTP service.`)
+  }
+  await assertPortAvailable(host, port, options)
+}
+
+function usage() {
+  return [
+    'Hermes Hub local Router environment',
+    '',
+    'Usage:',
+    '  node router-local-env.mjs init [--router-env <path>]',
+    '  node router-local-env.mjs run [--router-env <path>]',
+    '  node router-local-env.mjs rotate-approval-token [--router-env <path>]',
+    '',
+    'Hermes Hub monorepo usage:',
+    '  node apps/server-router/router-local-env.mjs init [--router-env <path>]',
+    '  node apps/server-router/router-local-env.mjs run [--router-env <path>]',
+    '  node apps/server-router/router-local-env.mjs rotate-approval-token [--router-env <path>]',
+    '',
+    'The token is generated once, never printed, and rotated only by the explicit command.',
+  ].join('\n')
+}
+
+async function runRouter(cwd, envFile) {
+  const environment = loadRouterEnvFile(envFile)
+  const tsxCli = join(cwd, 'node_modules', 'tsx', 'dist', 'cli.mjs')
+  const routerEntryCandidates = [
+    join(cwd, 'src', 'bridgeServer.ts'),
+    join(cwd, 'apps', 'server-router', 'src', 'bridgeServer.ts'),
+  ]
+  const routerEntry = routerEntryCandidates.find(candidate => existsSync(candidate))
+  if (!existsSync(tsxCli)) throw new Error('tsx is not installed. Run pnpm install first.')
+  if (!routerEntry) {
+    throw new Error('Router source was not found in a standalone checkout or Hermes Hub monorepo.')
+  }
+  await preflightRouterStart(environment)
+  const child = spawn(process.execPath, [tsxCli, routerEntry], {
+    cwd,
+    env: environment,
+    stdio: 'inherit',
+    windowsHide: true,
+  })
+  const forwardInterrupt = () => {
+    if (!child.killed) child.kill('SIGINT')
+  }
+  const forwardTerminate = () => {
+    if (!child.killed) child.kill('SIGTERM')
+  }
+  process.once('SIGINT', forwardInterrupt)
+  process.once('SIGTERM', forwardTerminate)
+  const result = await new Promise((resolvePromise, reject) => {
+    child.once('error', reject)
+    child.once('exit', (code, signal) => resolvePromise({ code, signal }))
+  })
+  process.removeListener('SIGINT', forwardInterrupt)
+  process.removeListener('SIGTERM', forwardTerminate)
+  if (result.signal) process.kill(process.pid, result.signal)
+  if (result.code !== 0) process.exitCode = result.code ?? 1
+}
+
+export async function main(argv = process.argv.slice(2), options = {}) {
+  const parsed = parseArgs(argv)
+  const command = parsed._[0] || 'help'
+  if (command === 'help' || parsed.help === true) {
+    process.stdout.write(`${usage()}\n`)
+    return
+  }
+  const cwd = resolve(options.cwd || process.cwd())
+  const envFile = resolve(cwd, textOption(parsed, 'router-env', defaultEnvFile(cwd)))
+  if (command === 'init') {
+    const result = ensureRouterEnvFile(envFile, options)
+    process.stdout.write(`Router environment ready at ${result.path}; approval token ${result.created ? 'generated' : 'reused'}.\n`)
+    return
+  }
+  if (command === 'rotate-approval-token') {
+    const result = ensureRouterEnvFile(envFile, { ...options, rotate: true })
+    process.stdout.write(`Router approval token rotated in ${result.path}; the value was not printed.\n`)
+    return
+  }
+  if (command === 'run') {
+    ensureRouterEnvFile(envFile, options)
+    await runRouter(cwd, envFile)
+    return
+  }
+  throw new Error(`Unknown Router environment command: ${command}`)
+}
+
+const isEntrypoint = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+if (isEntrypoint) {
+  main().catch(error => {
+    console.error(`[router-local-env] ERROR ${error.message}`)
+    process.exitCode = 1
+  })
+}
