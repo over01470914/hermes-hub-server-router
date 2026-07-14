@@ -334,8 +334,8 @@ async function downloadRuntime(baseUrl, workdir, dryRun) {
     version: VERSION,
     type: 'module',
     scripts: {
-      'router:dev': 'tsx apps/server-router/src/bridgeServer.ts',
-      'server-router:dev': 'tsx apps/server-router/src/bridgeServer.ts',
+      'router:dev': 'tsx src/bridgeServer.ts',
+      'server-router:dev': 'tsx src/bridgeServer.ts',
       'server:check': 'tsc -p tsconfig.server.json --pretty false',
     },
     dependencies: { ws: '^8.18.3' },
@@ -358,7 +358,7 @@ async function downloadRuntime(baseUrl, workdir, dryRun) {
       noEmit: true,
       types: ['node'],
     },
-    include: ['apps/server-router/src/**/*.ts'],
+    include: ['src/**/*.ts'],
   }, null, 2) + '\n')
   writeFile(join(workdir, 'dist', 'index.html'), '<!doctype html><meta charset="utf-8"><title>Hermes Hub Router</title><body>Hermes Hub Router</body>\n')
 }

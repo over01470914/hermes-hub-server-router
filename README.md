@@ -36,6 +36,18 @@ pnpm router:init
 pnpm router:dev
 ```
 
+After verifying the Gateway installer from a local loopback pairing prompt,
+the monorepo launcher can pass the private Router token directly to that child
+without exposing it to the Hermes agent conversation:
+
+```bash
+pnpm router:pair-gateway -- --installer <verified-installer> --request-id <pair-id>
+```
+
+It rejects non-loopback Router URLs and never prints the token. Remote or
+standalone hosts must provision the same token directly into the installer
+process environment.
+
 `HERMES_HUB_AGENT_APPROVAL_TOKEN` is required in development and production.
 `router:init` generates it once in the ignored repository-root `.env`, and
 `router:dev` automatically initializes and loads that file. Normal starts

@@ -170,6 +170,51 @@ try {
   assert.equal(cliRegenerated.stdout.includes(regeneratedCliToken), false)
   assert.equal(cliRegenerated.stderr.includes(regeneratedCliToken), false)
 
+  const installerReceipt = join(workdir, 'gateway-installer-receipt.json')
+  const verifiedInstaller = join(workdir, 'verified-gateway-installer.mjs')
+  writeFileSync(verifiedInstaller, [
+    "import { writeFileSync } from 'node:fs'",
+    "writeFileSync(process.env.HERMES_HUB_ROUTER_LAUNCH_SMOKE_RECEIPT, JSON.stringify({ args: process.argv.slice(2), approvalTokenLength: (process.env.HERMES_HUB_AGENT_APPROVAL_TOKEN || '').length }))",
+  ].join('\n'))
+  const launchedInstaller = spawnSync(process.execPath, [
+    scriptPath,
+    'pair-gateway',
+    '--router-env', cliEnvFile,
+    '--installer', verifiedInstaller,
+    '--router', 'http://127.0.0.1:4320',
+    '--request-id', 'pair_gateway_launcher_smoke',
+  ], {
+    cwd: workdir,
+    encoding: 'utf8',
+    env: { ...process.env, HERMES_HUB_ROUTER_LAUNCH_SMOKE_RECEIPT: installerReceipt },
+    windowsHide: true,
+  })
+  assert.equal(launchedInstaller.status, 0)
+  const installerLaunch = JSON.parse(readFileSync(installerReceipt, 'utf8'))
+  assert.equal(installerLaunch.approvalTokenLength, regeneratedCliToken.length)
+  assert.deepEqual(installerLaunch.args, [
+    '--router', 'http://127.0.0.1:4320',
+    '--request-id', 'pair_gateway_launcher_smoke',
+  ])
+  assert.equal(launchedInstaller.stdout.includes(regeneratedCliToken), false)
+  assert.equal(launchedInstaller.stderr.includes(regeneratedCliToken), false)
+  const remoteLauncher = spawnSync(process.execPath, [
+    scriptPath,
+    'pair-gateway',
+    '--router-env', cliEnvFile,
+    '--installer', verifiedInstaller,
+    '--router', 'https://router.example.test',
+    '--request-id', 'pair_gateway_launcher_smoke',
+  ], {
+    cwd: workdir,
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+  assert.notEqual(remoteLauncher.status, 0)
+  assert.match(remoteLauncher.stderr, /only sends Router approval to an HTTP\(S\) loopback Router URL/)
+  assert.equal(remoteLauncher.stdout.includes(regeneratedCliToken), false)
+  assert.equal(remoteLauncher.stderr.includes(regeneratedCliToken), false)
+
   const legacy = await listenHealth({
     ok: true,
     service: 'hermes-hub-router',
@@ -230,6 +275,7 @@ try {
       'invalid existing approval tokens fail closed instead of rotating silently',
       'non-file environment targets fail closed before reading',
       'CLI initialization, rotation, and clearing never print token values',
+      'the local Gateway launcher injects the token only into a verified installer child and rejects remote Router URLs',
       'startup preflight distinguishes legacy and Gateway-only Router listeners',
       'startup preflight accepts an available configured port',
       ...(process.platform === 'win32' ? ['the environment file has a non-inherited private Windows ACL'] : []),

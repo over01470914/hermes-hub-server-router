@@ -214,6 +214,69 @@ function healthProbeUrl(environment, host, port) {
   return `http://${authority}:${port}${basePath}/router/health`
 }
 
+function loopbackRouterUrl(value) {
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error('The local Gateway launcher requires a valid loopback Router URL.')
+  }
+  const host = url.hostname.toLowerCase()
+  const isLoopback = host === '::1' || host === 'localhost' || /^127(?:\.\d{1,3}){3}$/.test(host)
+  if (!isLoopback || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) {
+    throw new Error('The local Gateway launcher only sends Router approval to an HTTP(S) loopback Router URL.')
+  }
+  return url.toString().replace(/\/$/, '')
+}
+
+function verifiedInstallerPath(value) {
+  if (!value) throw new Error('pair-gateway requires --installer <verified-installer-path>.')
+  const path = resolve(value)
+  if (!existsSync(path)) throw new Error('The verified Gateway installer file was not found.')
+  const stat = lstatSync(path)
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error('The verified Gateway installer must be a regular local file.')
+  }
+  return path
+}
+
+export async function runApprovedGatewayInstaller(options = {}) {
+  const envFile = resolve(options.envFile || defaultEnvFile(process.cwd()))
+  const installer = verifiedInstallerPath(options.installer)
+  const requestId = typeof options.requestId === 'string' ? options.requestId.trim() : ''
+  if (!/^pair_[A-Za-z0-9_-]{8,160}$/.test(requestId)) {
+    throw new Error('pair-gateway requires a valid --request-id <pair-id>.')
+  }
+  hardenPrivateEnvFile(envFile, options)
+  const environment = loadRouterEnvFile(envFile, options.baseEnvironment || process.env)
+  const approvalToken = environment[approvalTokenKey]
+  if (!tokenIsValid(approvalToken)) {
+    throw new Error('The private Router environment has no valid approval token; run init and restart Router before pairing.')
+  }
+  const routerUrl = loopbackRouterUrl(
+    typeof options.routerUrl === 'string' && options.routerUrl
+      ? options.routerUrl
+      : environment.HERMES_HUB_ROUTER_URL || 'http://127.0.0.1:4320',
+  )
+  const child = (options.spawnImpl || spawn)(process.execPath, [
+    installer,
+    '--router', routerUrl,
+    '--request-id', requestId,
+  ], {
+    cwd: dirname(installer),
+    env: environment,
+    stdio: options.stdio || 'inherit',
+    windowsHide: true,
+  })
+  const result = await new Promise((resolvePromise, reject) => {
+    child.once('error', reject)
+    child.once('exit', (code, signal) => resolvePromise({ code, signal }))
+  })
+  if (result.signal) throw new Error(`Gateway installer stopped by ${result.signal}.`)
+  if (result.code !== 0) throw new Error(`Gateway installer exited with code ${result.code ?? 1}.`)
+  return { installer, requestId, routerUrl }
+}
+
 async function probeHealth(url, options = {}) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 750)
@@ -283,12 +346,14 @@ function usage() {
     '  node router-local-env.mjs run [--router-env <path>]',
     '  node router-local-env.mjs rotate-approval-token [--router-env <path>]',
     '  node router-local-env.mjs clear-approval-token [--router-env <path>]',
+    '  node router-local-env.mjs pair-gateway --installer <verified-installer-path> --request-id <pair-id> [--router <loopback-url>] [--router-env <path>]',
     '',
     'Hermes Hub monorepo usage:',
-    '  node apps/server-router/router-local-env.mjs init [--router-env <path>]',
-    '  node apps/server-router/router-local-env.mjs run [--router-env <path>]',
-    '  node apps/server-router/router-local-env.mjs rotate-approval-token [--router-env <path>]',
-    '  node apps/server-router/router-local-env.mjs clear-approval-token [--router-env <path>]',
+    '  node apps/hermes-hub-server-router/router-local-env.mjs init [--router-env <path>]',
+    '  node apps/hermes-hub-server-router/router-local-env.mjs run [--router-env <path>]',
+    '  node apps/hermes-hub-server-router/router-local-env.mjs rotate-approval-token [--router-env <path>]',
+    '  node apps/hermes-hub-server-router/router-local-env.mjs clear-approval-token [--router-env <path>]',
+    '  pnpm router:pair-gateway -- --installer <verified-installer-path> --request-id <pair-id> [--router <loopback-url>]',
     '',
     'The token is generated once, never printed, and rotated or cleared only by explicit local commands.',
   ].join('\n')
@@ -299,6 +364,7 @@ async function runRouter(cwd, envFile) {
   const tsxCli = join(cwd, 'node_modules', 'tsx', 'dist', 'cli.mjs')
   const routerEntryCandidates = [
     join(cwd, 'src', 'bridgeServer.ts'),
+    join(cwd, 'apps', 'hermes-hub-server-router', 'src', 'bridgeServer.ts'),
     join(cwd, 'apps', 'server-router', 'src', 'bridgeServer.ts'),
   ]
   const routerEntry = routerEntryCandidates.find(candidate => existsSync(candidate))
@@ -357,6 +423,17 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         ? `Router approval token cleared from ${result.path}; run init or run to generate a new value.\n`
         : `Router environment at ${result.path} has no approval token to clear.\n`,
     )
+    return
+  }
+  if (command === 'pair-gateway') {
+    const result = await runApprovedGatewayInstaller({
+      ...options,
+      envFile,
+      installer: textOption(parsed, 'installer'),
+      requestId: textOption(parsed, 'request-id'),
+      routerUrl: textOption(parsed, 'router'),
+    })
+    process.stdout.write(`Gateway installer completed for ${result.requestId}; Router approval token was not printed.\n`)
     return
   }
   if (command === 'run') {
