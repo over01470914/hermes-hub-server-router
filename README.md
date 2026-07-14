@@ -76,6 +76,15 @@ base path so a pairing command can bootstrap from a standalone `install.mjs`.
 `GET /router/health` advertises the authoritative source, installer, and
 manifest URLs so an Agent starting from any deployed Router URL can discover
 the correct mapping without assuming the deployment base path.
+
+The pairing prompt bootstraps from an immutable Gateway repository commit and
+pins the installer's exact byte count and SHA-256. It downloads without
+execution, verifies and displays the complete installer, and only then offers
+the install command. Native Windows PowerShell, Node.js, and POSIX curl branches
+are included; none requires Git. Hermes Agent versions whose Windows terminal
+adapter requires Git Bash cannot execute any branch through that adapter, so
+the prompt identifies that limitation accurately and returns the same native
+PowerShell block for the operator to run directly.
 The Router accepts both prefixed requests and requests whose trusted reverse
 proxy has already removed that prefix.
 

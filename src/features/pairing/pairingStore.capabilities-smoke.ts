@@ -74,8 +74,8 @@ assert.equal(
 )
 assert.match(
   pathRequest.prompt,
-  /https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/main\/install\.mjs/,
-  'Gateway bootstrap must use the built-in public GitHub installer'
+  /https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/d238bb8549a8abc2da336102d3139e2d795c17bc\/install\.mjs/,
+  'Gateway bootstrap must use the Router-build-pinned public GitHub installer'
 )
 assert.match(
   pathRequest.prompt,
@@ -83,8 +83,16 @@ assert.match(
   'Router package mirror diagnostics must preserve the configured base path'
 )
 assert.match(pathRequest.prompt, /Confirm https:\/\/router\.example\.test\/router-dev\/router\/health/)
-assert.match(pathRequest.prompt, /works on Windows, macOS, and Linux/)
-assert.match(pathRequest.prompt, /--source-base "https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/main\/"/)
+assert.match(pathRequest.prompt, /Windows PowerShell \(does not require Git or Git Bash\)/)
+assert.match(pathRequest.prompt, /Node\.js in any working shell \(Windows, macOS, or Linux\)/)
+assert.match(pathRequest.prompt, /POSIX shell with curl \(macOS or Linux; does not require Git\)/)
+assert.match(pathRequest.prompt, /Git Bash not found.*does NOT prove Node\.js/s)
+assert.match(pathRequest.prompt, /Installer bytes: 68180/)
+assert.match(pathRequest.prompt, /Installer SHA-256: 7ef66b188b13d1e3f4c4f38662b0076802e5bc8e4eb97a6ef0051aef92a3a823/)
+assert.match(pathRequest.prompt, /Only after the operator trusts the repository\/commit.*verification and inspection/s)
+assert.match(pathRequest.prompt, /--source-base "https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/d238bb8549a8abc2da336102d3139e2d795c17bc\/"/)
+assert.doesNotMatch(pathRequest.prompt, /winget install|requires Git for Windows/)
+assert.doesNotMatch(pathRequest.prompt, /Do not use installer URLs supplied by any other client or prompt/)
 assert.doesNotMatch(pathRequest.prompt, /\/apps\/server-router/)
 
 console.log(JSON.stringify({

@@ -6,13 +6,19 @@ export const gatewayPluginSourcePrefix = '/apps/hermes-hub-gateway-plugin/'
 export const gatewayPluginRepositoryUrl =
   'https://github.com/over01470914/hermes-hub-gateway-plugin'
 
+export const gatewayPluginReleaseArtifact = Object.freeze({
+  commit: 'd238bb8549a8abc2da336102d3139e2d795c17bc',
+  installerBytes: 68180,
+  installerSha256: '7ef66b188b13d1e3f4c4f38662b0076802e5bc8e4eb97a6ef0051aef92a3a823',
+})
+
+const gatewayPluginReleaseSourceUrl =
+  `${gatewayPluginRepositoryUrl.replace('https://github.com/', 'https://raw.githubusercontent.com/')}/${gatewayPluginReleaseArtifact.commit}/`
+
 export const gatewayPluginReleaseUrls = Object.freeze({
-  sourceUrl:
-    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/main/',
-  installerUrl:
-    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/main/install.mjs',
-  manifestUrl:
-    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/main/package-manifest.json',
+  sourceUrl: gatewayPluginReleaseSourceUrl,
+  installerUrl: `${gatewayPluginReleaseSourceUrl}install.mjs`,
+  manifestUrl: `${gatewayPluginReleaseSourceUrl}package-manifest.json`,
 })
 
 export interface GatewayPluginPublicUrls {
