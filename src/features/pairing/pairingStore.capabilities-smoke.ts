@@ -74,21 +74,25 @@ assert.equal(
 )
 assert.match(
   pathRequest.prompt,
-  /https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/a724f077c22f2a48d6eb32018c985d0129f39824\/install\.mjs/,
+  /https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/4c0c31e0e99218c189ba96055ccacb700dceb0b6\/install\.mjs/,
   'Gateway bootstrap must use the Router-build-pinned public GitHub installer'
 )
 assert.match(pathRequest.prompt, /GET https:\/\/router\.example\.test\/router-dev\/router\/health/)
 assert.match(pathRequest.prompt, /Never guess or hard-code a username, drive, home, checkout/)
-assert.match(pathRequest.prompt, /hermes config path/)
+assert.match(pathRequest.prompt, /HERMES_COMMAND/)
+assert.match(pathRequest.prompt, /with `--version` and `config path`/)
+assert.match(pathRequest.prompt, /one new uniquely named \.mjs helper/)
+assert.match(pathRequest.prompt, /do not alter an existing file, use `node -e`/)
 assert.match(pathRequest.prompt, /node "<verified-installer-path>"/)
+assert.match(pathRequest.prompt, /shell disabled, and the unchanged inherited environment/)
 assert.match(pathRequest.prompt, /Do not call POST \/router\/pairing\/approve/)
 assert.match(pathRequest.prompt, /401, 409, 502, or another 5xx/)
 assert.match(pathRequest.prompt, /Do not probe, retry, or call an alternative endpoint/)
-assert.match(pathRequest.prompt, /Installer bytes: 68180/)
-assert.match(pathRequest.prompt, /Installer SHA-256: 7ef66b188b13d1e3f4c4f38662b0076802e5bc8e4eb97a6ef0051aef92a3a823/)
+assert.match(pathRequest.prompt, /Installer bytes: 68536/)
+assert.match(pathRequest.prompt, /Installer SHA-256: c2aabfe14445bff7178fed4904f6361f84114b435e352002d068d5a0afaccbc2/)
 assert.match(pathRequest.prompt, /Verify the raw file has the exact byte count and lowercase SHA-256/)
-assert.match(pathRequest.prompt, /--source-base "https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/a724f077c22f2a48d6eb32018c985d0129f39824\/"/)
-assert.doesNotMatch(pathRequest.prompt, /winget install|requires Git for Windows|corepack|pnpm|hermes gateway stop/)
+assert.match(pathRequest.prompt, /--source-base "https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/4c0c31e0e99218c189ba96055ccacb700dceb0b6\/"/)
+assert.doesNotMatch(pathRequest.prompt, /winget install|requires Git for Windows|corepack pnpm|pnpm router:|hermes gateway stop/)
 assert.doesNotMatch(pathRequest.prompt, /[A-Za-z]:\\|\/Users\/|\/home\//)
 assert.doesNotMatch(pathRequest.prompt, /\/apps\/server-router/)
 

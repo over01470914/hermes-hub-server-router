@@ -28,17 +28,17 @@ assert.equal(
   'https://github.com/over01470914/hermes-hub-gateway-plugin',
 )
 assert.deepEqual(gatewayPluginReleaseArtifact, {
-  commit: 'a724f077c22f2a48d6eb32018c985d0129f39824',
-  installerBytes: 68180,
-  installerSha256: '7ef66b188b13d1e3f4c4f38662b0076802e5bc8e4eb97a6ef0051aef92a3a823',
+  commit: '4c0c31e0e99218c189ba96055ccacb700dceb0b6',
+  installerBytes: 68536,
+  installerSha256: 'c2aabfe14445bff7178fed4904f6361f84114b435e352002d068d5a0afaccbc2',
 })
 assert.deepEqual(gatewayPluginReleaseUrls, {
   sourceUrl:
-    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/a724f077c22f2a48d6eb32018c985d0129f39824/',
+    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/4c0c31e0e99218c189ba96055ccacb700dceb0b6/',
   installerUrl:
-    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/a724f077c22f2a48d6eb32018c985d0129f39824/install.mjs',
+    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/4c0c31e0e99218c189ba96055ccacb700dceb0b6/install.mjs',
   manifestUrl:
-    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/a724f077c22f2a48d6eb32018c985d0129f39824/package-manifest.json',
+    'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/4c0c31e0e99218c189ba96055ccacb700dceb0b6/package-manifest.json',
 })
 
 interface PackageManifest {
