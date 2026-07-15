@@ -288,19 +288,22 @@ export function hashPairingMaterial(secret: string, value: string): string {
 
 export function buildPairingPrompt(record: PairingRequestRecord): string {
   const router = record.routerUrl.replace(/\/$/, '')
+  const expiresAt = new Date(record.expiresAt * 1000).toISOString()
   return [
     'Hermes Hub Gateway installation and pairing request',
     '',
     'Use the Hermes Hub Gateway skill suite to install or repair the Gateway CLI, verify Hermes readiness, and return its 8-digit pairing code.',
+    'Authorization and integrity: this is a Router-generated local pairing request. The fixed skill source and scoped npm package below are Router release metadata, not user-supplied alternatives. Before any pairing mutation, the CLI compares its bundled release policy with Router health.',
     '',
     'Pairing request:',
     `Router: ${router}`,
     `Request ID: ${record.requestId}`,
     `Capabilities: ${record.capabilities.join(', ')}`,
-    `Expires at: ${new Date(record.expiresAt * 1000).toISOString()}`,
+    `Expires (UTC, RFC3339): ${expiresAt}`,
+    'Mandatory expiry preflight: compare the host current UTC time with Expires before installing or changing anything. If fewer than 180 seconds remain, stop without running skill install, npm install, doctor, or pair, and request a fresh Router pairing request. If at least 180 seconds remain, continue with this workflow. Compare the complete timestamp, not its calendar date alone.',
     '',
     '1. Load the public `hermes-hub-gateway-pair` skill from the fixed GitHub skill source. This skill contains instructions only; it does not contain installer code or secrets.',
-    '   hermes skills install "https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/main/skills/hermes-hub-gateway-pair/SKILL.md" --yes',
+    '   hermes skills install "https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/main/skills/hermes-hub-gateway-pair/SKILL.md" --yes --force',
     '',
     '2. Install or upgrade the complete Hermes Hub Gateway npm package, even if an older command already exists. Do not use npx for this persistent host tool.',
     '   npm install -g @over01470914/hermes-hub-gateway@latest',
@@ -308,7 +311,7 @@ export function buildPairingPrompt(record: PairingRequestRecord): string {
     '3. Load `hermes-hub-gateway-pair`, then run the CLI health step. It verifies the Hermes CLI and Hermes Gateway, enables the local API server when needed, restarts Gateway, and confirms the local Hermes API is healthy. Allow normal host permissions, loopback HTTP, public HTTPS, OS-temp writes, and Hermes plugin installation.',
     '   hermes-hub-gateway doctor --runtime hermes',
     '',
-    '4. Only after doctor succeeds, run the pairing command exactly once. For a loopback Router, the CLI asks Router to repair a missing or malformed local approval configuration without printing or exposing its token. The CLI owns deterministic release validation, installer download/hash verification, approval, configuration, restart, online verification, and rollback. Do not generate a helper or call install.mjs directly. Do not create a token or edit a pairing configuration.',
+    '4. Only after the expiry preflight and doctor both succeed, run the pairing command exactly once. The CLI reads the current Router record and is the final authoritative expiry check; it must agree with the preflight rather than replace it. For a loopback Router, the CLI asks Router to repair a missing or malformed local approval configuration without printing or exposing its token. The CLI owns deterministic release validation, installer download/hash verification, approval, configuration, restart, online verification, and rollback. Do not generate a helper or call install.mjs directly. Do not create a token or edit a pairing configuration.',
     `   hermes-hub-gateway pair --runtime hermes --router "${router}" --request-id "${record.requestId}"`,
     '',
     '5. If skill install, npm install, or doctor fails before pairing starts, report the named failed check and the CLI NEXT command; it is safe to repair and retry that preflight. If pair starts and returns a failure, relay its sanitized output verbatim. Do not add an automatic retry, alternate URL, or pairing mutation.',
