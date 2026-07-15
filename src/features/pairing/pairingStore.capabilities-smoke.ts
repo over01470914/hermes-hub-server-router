@@ -72,26 +72,15 @@ assert.equal(
   'https://router.example.test/router-dev',
   'operator-configured Router base paths must be preserved'
 )
-assert.match(
-  pathRequest.prompt,
-  /https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/4c0c31e0e99218c189ba96055ccacb700dceb0b6\/install\.mjs/,
-  'Gateway bootstrap must use the Router-build-pinned public GitHub installer'
-)
-assert.match(pathRequest.prompt, /GET https:\/\/router\.example\.test\/router-dev\/router\/health/)
-assert.match(pathRequest.prompt, /Never guess or hard-code a username, drive, home, checkout/)
-assert.match(pathRequest.prompt, /HERMES_COMMAND/)
-assert.match(pathRequest.prompt, /with `--version` and `config path`/)
-assert.match(pathRequest.prompt, /one new uniquely named \.mjs helper/)
-assert.match(pathRequest.prompt, /do not alter an existing file, use `node -e`/)
-assert.match(pathRequest.prompt, /node "<verified-installer-path>"/)
-assert.match(pathRequest.prompt, /shell disabled, and the unchanged inherited environment/)
-assert.match(pathRequest.prompt, /Do not call POST \/router\/pairing\/approve/)
-assert.match(pathRequest.prompt, /401, 409, 502, or another 5xx/)
-assert.match(pathRequest.prompt, /Do not probe, retry, or call an alternative endpoint/)
-assert.match(pathRequest.prompt, /Installer bytes: 68536/)
-assert.match(pathRequest.prompt, /Installer SHA-256: c2aabfe14445bff7178fed4904f6361f84114b435e352002d068d5a0afaccbc2/)
-assert.match(pathRequest.prompt, /Verify the raw file has the exact byte count and lowercase SHA-256/)
-assert.match(pathRequest.prompt, /--source-base "https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/4c0c31e0e99218c189ba96055ccacb700dceb0b6\/"/)
+assert.match(pathRequest.prompt, /Load the installed `hermes-hub-gateway-pairing` skill before taking any action/)
+assert.match(pathRequest.prompt, /loaded skill's `skill_dir`/)
+assert.match(pathRequest.prompt, /node "<skill_dir>\/scripts\/pair\.mjs" --router "https:\/\/router\.example\.test\/router-dev"/)
+assert.match(pathRequest.prompt, /Do not generate, write, copy, or modify a helper script/)
+assert.match(pathRequest.prompt, /Do not add a retry, alternate URL, or pairing mutation/)
+assert.match(pathRequest.prompt, /normal-permission terminal invocation/)
+assert.doesNotMatch(pathRequest.prompt, /raw\.githubusercontent\.com/)
+assert.doesNotMatch(pathRequest.prompt, /new uniquely named \.mjs helper/)
+assert.doesNotMatch(pathRequest.prompt, /<verified-installer-path>|HERMES_COMMAND|HERMES_HUB_AGENT_APPROVAL_TOKEN/)
 assert.doesNotMatch(pathRequest.prompt, /winget install|requires Git for Windows|corepack pnpm|pnpm router:|hermes gateway stop/)
 assert.doesNotMatch(pathRequest.prompt, /[A-Za-z]:\\|\/Users\/|\/home\//)
 assert.doesNotMatch(pathRequest.prompt, /\/apps\/server-router/)

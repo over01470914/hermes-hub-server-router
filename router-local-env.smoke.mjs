@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   clearRouterApprovalToken,
+  defaultPairingConfigPath,
   ensureRouterEnvFile,
   loadRouterEnvFile,
   preflightRouterStart,
@@ -40,47 +41,92 @@ async function closeServer(server) {
 }
 
 try {
-  const generated = ensureRouterEnvFile(envFile, {
+  const defaultHermesHome = join(workdir, 'default-hermes-home')
+  const defaultConfigPath = join(defaultHermesHome, 'hermes-hub', 'pairing.json')
+  assert.equal(
+    defaultPairingConfigPath({ environment: { HERMES_HOME: defaultHermesHome } }),
+    defaultConfigPath,
+  )
+  const defaultBackedEnvFile = join(workdir, 'default-backed.env')
+  ensureRouterEnvFile(defaultBackedEnvFile, {
+    environment: { HERMES_HOME: defaultHermesHome },
     platform: process.platform,
+    tokenFactory: () => 'd'.repeat(64),
+  })
+  assert.equal(JSON.parse(readFileSync(defaultConfigPath, 'utf8')).approvalToken, 'd'.repeat(64))
+  assert.equal(
+    loadRouterEnvFile(defaultBackedEnvFile, {}, {
+      environment: { HERMES_HOME: defaultHermesHome },
+    }).HERMES_HUB_AGENT_APPROVAL_TOKEN,
+    'd'.repeat(64),
+  )
+
+  const configBackedEnvFile = join(workdir, 'config-backed.env')
+  const pairingConfigPath = join(workdir, 'hermes-home', 'hermes-hub', 'pairing.json')
+  const configBacked = ensureRouterEnvFile(configBackedEnvFile, {
+    platform: process.platform,
+    pairingConfigPath,
+    tokenFactory: () => 'p'.repeat(64),
+  })
+  assert.equal(configBacked.created, true)
+  assert.equal(readFileSync(configBackedEnvFile, 'utf8').includes('HERMES_HUB_AGENT_APPROVAL_TOKEN'), false)
+  assert.deepEqual(JSON.parse(readFileSync(pairingConfigPath, 'utf8')), {
+    schemaVersion: 1,
+    approvalToken: 'p'.repeat(64),
+  })
+  assert.equal(
+    loadRouterEnvFile(configBackedEnvFile, {}, { pairingConfigPath }).HERMES_HUB_AGENT_APPROVAL_TOKEN,
+    'p'.repeat(64),
+  )
+
+  const routerPairingConfigPath = join(workdir, 'router-hermes-home', 'hermes-hub', 'pairing.json')
+  const routerOptions = { platform: process.platform, pairingConfigPath: routerPairingConfigPath }
+  const generated = ensureRouterEnvFile(envFile, {
+    ...routerOptions,
     tokenFactory: () => 'a'.repeat(64),
   })
   assert.equal(generated.created, true)
-  assert.match(readFileSync(envFile, 'utf8'), /^HERMES_HUB_AGENT_APPROVAL_TOKEN=a{64}\n$/)
+  assert.equal(readFileSync(envFile, 'utf8').includes('HERMES_HUB_AGENT_APPROVAL_TOKEN'), false)
+  assert.equal(JSON.parse(readFileSync(routerPairingConfigPath, 'utf8')).approvalToken, 'a'.repeat(64))
 
   const reused = ensureRouterEnvFile(envFile, {
-    platform: process.platform,
+    ...routerOptions,
     tokenFactory: () => 'b'.repeat(64),
   })
   assert.equal(reused.created, false)
   assert.equal(reused.rotated, false)
-  assert.match(readFileSync(envFile, 'utf8'), /^HERMES_HUB_AGENT_APPROVAL_TOKEN=a{64}\n$/)
+  assert.equal(JSON.parse(readFileSync(routerPairingConfigPath, 'utf8')).approvalToken, 'a'.repeat(64))
 
   const rotated = ensureRouterEnvFile(envFile, {
-    platform: process.platform,
+    ...routerOptions,
     rotate: true,
     tokenFactory: () => 'c'.repeat(64),
   })
   assert.equal(rotated.rotated, true)
-  assert.match(readFileSync(envFile, 'utf8'), /^HERMES_HUB_AGENT_APPROVAL_TOKEN=c{64}\n$/)
+  assert.equal(JSON.parse(readFileSync(routerPairingConfigPath, 'utf8')).approvalToken, 'c'.repeat(64))
 
-  const loaded = loadRouterEnvFile(envFile, { PRESERVED: 'yes' })
+  const loaded = loadRouterEnvFile(envFile, { PRESERVED: 'yes' }, routerOptions)
   assert.equal(loaded.PRESERVED, 'yes')
   assert.equal(loaded.HERMES_HUB_AGENT_APPROVAL_TOKEN, 'c'.repeat(64))
   assert.equal(readFileSync(envFile, 'utf8').includes('b'.repeat(64)), false)
 
+  const legacyPairingConfigPath = join(workdir, 'legacy-hermes-home', 'hermes-hub', 'pairing.json')
   writeFileSync(envFile, `UNCHANGED=value\nHERMES_HUB_AGENT_APPROVAL_TOKEN=${'d'.repeat(64)}\n`, 'utf8')
-  ensureRouterEnvFile(envFile, { platform: process.platform })
-  assert.match(readFileSync(envFile, 'utf8'), /^UNCHANGED=value\nHERMES_HUB_AGENT_APPROVAL_TOKEN=d{64}\n$/)
+  ensureRouterEnvFile(envFile, { platform: process.platform, pairingConfigPath: legacyPairingConfigPath })
+  assert.equal(readFileSync(envFile, 'utf8'), 'UNCHANGED=value\n')
+  assert.equal(JSON.parse(readFileSync(legacyPairingConfigPath, 'utf8')).approvalToken, 'd'.repeat(64))
 
-  const cleared = clearRouterApprovalToken(envFile, { platform: process.platform })
+  const cleared = clearRouterApprovalToken(envFile, { platform: process.platform, pairingConfigPath: legacyPairingConfigPath })
   assert.equal(cleared.cleared, true)
   assert.equal(readFileSync(envFile, 'utf8'), 'UNCHANGED=value\n')
   const regenerated = ensureRouterEnvFile(envFile, {
     platform: process.platform,
+    pairingConfigPath: legacyPairingConfigPath,
     tokenFactory: () => 'g'.repeat(64),
   })
   assert.equal(regenerated.created, true)
-  assert.match(readFileSync(envFile, 'utf8'), /^UNCHANGED=value\nHERMES_HUB_AGENT_APPROVAL_TOKEN=g{64}\n$/)
+  assert.equal(readFileSync(envFile, 'utf8'), 'UNCHANGED=value\n')
+  assert.equal(JSON.parse(readFileSync(legacyPairingConfigPath, 'utf8')).approvalToken, 'g'.repeat(64))
 
   if (process.platform === 'win32') {
     const acl = spawnSync('powershell.exe', [
@@ -91,7 +137,7 @@ try {
       '$acl = Get-Acl -LiteralPath $env:HERMES_HUB_ROUTER_ENV_SMOKE_PATH; $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { [pscustomobject]@{ sid = $_.IdentityReference.Value; inherited = $_.IsInherited; rights = $_.FileSystemRights.ToString(); type = $_.AccessControlType.ToString() } } | ConvertTo-Json -Compress',
     ], {
       encoding: 'utf8',
-      env: { ...process.env, HERMES_HUB_ROUTER_ENV_SMOKE_PATH: envFile },
+      env: { ...process.env, HERMES_HUB_ROUTER_ENV_SMOKE_PATH: legacyPairingConfigPath },
       windowsHide: true,
     })
     assert.equal(acl.status, 0)
@@ -108,64 +154,97 @@ try {
     'utf8',
   )
   assert.throws(
-    () => ensureRouterEnvFile(duplicateEnvFile, { platform: process.platform }),
+    () => ensureRouterEnvFile(duplicateEnvFile, {
+      platform: process.platform,
+      pairingConfigPath: join(workdir, 'duplicate-hermes-home', 'hermes-hub', 'pairing.json'),
+    }),
     /appears more than once/,
   )
-  const duplicateClear = clearRouterApprovalToken(duplicateEnvFile, { platform: process.platform })
+  const duplicateClear = clearRouterApprovalToken(duplicateEnvFile, {
+    platform: process.platform,
+    pairingConfigPath: join(workdir, 'duplicate-hermes-home', 'hermes-hub', 'pairing.json'),
+  })
   assert.equal(duplicateClear.cleared, true)
   assert.equal(readFileSync(duplicateEnvFile, 'utf8'), '\n')
 
   const shortEnvFile = join(workdir, 'short.env')
   writeFileSync(shortEnvFile, 'HERMES_HUB_AGENT_APPROVAL_TOKEN=short\n', 'utf8')
   assert.throws(
-    () => ensureRouterEnvFile(shortEnvFile, { platform: process.platform }),
+    () => ensureRouterEnvFile(shortEnvFile, {
+      platform: process.platform,
+      pairingConfigPath: join(workdir, 'short-hermes-home', 'hermes-hub', 'pairing.json'),
+    }),
     /at least 32 non-whitespace characters/,
   )
 
   const invalidTarget = join(workdir, 'not-a-file.env')
   mkdirSync(invalidTarget)
   assert.throws(
-    () => ensureRouterEnvFile(invalidTarget, { platform: process.platform }),
+    () => ensureRouterEnvFile(invalidTarget, {
+      platform: process.platform,
+      pairingConfigPath: join(workdir, 'invalid-target-hermes-home', 'hermes-hub', 'pairing.json'),
+    }),
     /regular local file/,
   )
 
   const cliEnvFile = join(workdir, 'cli.env')
-  const initialized = spawnSync(process.execPath, [scriptPath, 'init', '--router-env', cliEnvFile], {
+  const cliPairingConfigPath = join(workdir, 'cli-hermes-home', 'hermes-hub', 'pairing.json')
+  const initialized = spawnSync(process.execPath, [
+    scriptPath,
+    'init',
+    '--router-env', cliEnvFile,
+    '--pairing-config', cliPairingConfigPath,
+  ], {
     cwd: workdir,
     encoding: 'utf8',
     windowsHide: true,
   })
   assert.equal(initialized.status, 0)
-  const initialToken = loadRouterEnvFile(cliEnvFile, {}).HERMES_HUB_AGENT_APPROVAL_TOKEN
+  const initialToken = loadRouterEnvFile(cliEnvFile, {}, { pairingConfigPath: cliPairingConfigPath }).HERMES_HUB_AGENT_APPROVAL_TOKEN
   assert.equal(initialized.stdout.includes(initialToken), false)
   assert.equal(initialized.stderr.includes(initialToken), false)
-  const cliRotated = spawnSync(process.execPath, [scriptPath, 'rotate-approval-token', '--router-env', cliEnvFile], {
+  const cliRotated = spawnSync(process.execPath, [
+    scriptPath,
+    'rotate-approval-token',
+    '--router-env', cliEnvFile,
+    '--pairing-config', cliPairingConfigPath,
+  ], {
     cwd: workdir,
     encoding: 'utf8',
     windowsHide: true,
   })
   assert.equal(cliRotated.status, 0)
-  const rotatedToken = loadRouterEnvFile(cliEnvFile, {}).HERMES_HUB_AGENT_APPROVAL_TOKEN
+  const rotatedToken = loadRouterEnvFile(cliEnvFile, {}, { pairingConfigPath: cliPairingConfigPath }).HERMES_HUB_AGENT_APPROVAL_TOKEN
   assert.notEqual(rotatedToken, initialToken)
   assert.equal(cliRotated.stdout.includes(rotatedToken), false)
   assert.equal(cliRotated.stderr.includes(rotatedToken), false)
-  const cliCleared = spawnSync(process.execPath, [scriptPath, 'clear-approval-token', '--router-env', cliEnvFile], {
+  const cliCleared = spawnSync(process.execPath, [
+    scriptPath,
+    'clear-approval-token',
+    '--router-env', cliEnvFile,
+    '--pairing-config', cliPairingConfigPath,
+  ], {
     cwd: workdir,
     encoding: 'utf8',
     windowsHide: true,
   })
   assert.equal(cliCleared.status, 0)
-  const clearedCliEnvironment = loadRouterEnvFile(cliEnvFile, {})
+  const clearedCliEnvironment = loadRouterEnvFile(cliEnvFile, {}, { pairingConfigPath: cliPairingConfigPath })
   assert.equal('HERMES_HUB_AGENT_APPROVAL_TOKEN' in clearedCliEnvironment, false)
   assert.equal(cliCleared.stdout.includes(rotatedToken), false)
   assert.equal(cliCleared.stderr.includes(rotatedToken), false)
-  const cliRegenerated = spawnSync(process.execPath, [scriptPath, 'init', '--router-env', cliEnvFile], {
+  const cliRegenerated = spawnSync(process.execPath, [
+    scriptPath,
+    'init',
+    '--router-env', cliEnvFile,
+    '--pairing-config', cliPairingConfigPath,
+  ], {
     cwd: workdir,
     encoding: 'utf8',
     windowsHide: true,
   })
   assert.equal(cliRegenerated.status, 0)
-  const regeneratedCliToken = loadRouterEnvFile(cliEnvFile, {}).HERMES_HUB_AGENT_APPROVAL_TOKEN
+  const regeneratedCliToken = loadRouterEnvFile(cliEnvFile, {}, { pairingConfigPath: cliPairingConfigPath }).HERMES_HUB_AGENT_APPROVAL_TOKEN
   assert.notEqual(regeneratedCliToken, rotatedToken)
   assert.equal(cliRegenerated.stdout.includes(regeneratedCliToken), false)
   assert.equal(cliRegenerated.stderr.includes(regeneratedCliToken), false)
@@ -180,6 +259,7 @@ try {
     scriptPath,
     'pair-gateway',
     '--router-env', cliEnvFile,
+    '--pairing-config', cliPairingConfigPath,
     '--installer', verifiedInstaller,
     '--router', 'http://127.0.0.1:4320',
     '--source-base', 'http://127.0.0.1:4320/apps/hermes-hub-gateway-plugin/',
@@ -204,6 +284,7 @@ try {
     scriptPath,
     'pair-gateway',
     '--router-env', cliEnvFile,
+    '--pairing-config', cliPairingConfigPath,
     '--installer', verifiedInstaller,
     '--router', 'https://router.example.test',
     '--request-id', 'pair_gateway_launcher_smoke',
@@ -220,6 +301,7 @@ try {
     scriptPath,
     'pair-gateway',
     '--router-env', cliEnvFile,
+    '--pairing-config', cliPairingConfigPath,
     '--installer', verifiedInstaller,
     '--router', 'http://127.0.0.1:4320',
     '--source-base', 'http://127.0.0.1:4320/untrusted-package/',

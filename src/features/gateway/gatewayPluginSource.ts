@@ -7,9 +7,9 @@ export const gatewayPluginRepositoryUrl =
   'https://github.com/over01470914/hermes-hub-gateway-plugin'
 
 export const gatewayPluginReleaseArtifact = Object.freeze({
-  commit: '4c0c31e0e99218c189ba96055ccacb700dceb0b6',
-  installerBytes: 68536,
-  installerSha256: 'c2aabfe14445bff7178fed4904f6361f84114b435e352002d068d5a0afaccbc2',
+  commit: 'a4c0dbf6c0f38918af698e8755b5c18ae2a1b09d',
+  installerBytes: 68848,
+  installerSha256: '08c850454a239ad66902f48b1a5d74a79b2ab7eee902fde09a82c2bc51919c25',
 })
 
 const gatewayPluginReleaseSourceUrl =

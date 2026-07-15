@@ -15,11 +15,14 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { createServer as createNetServer } from 'node:net'
 import { fileURLToPath } from 'node:url'
 
 const approvalTokenKey = 'HERMES_HUB_AGENT_APPROVAL_TOKEN'
+const pairingConfigSchemaVersion = 1
+const pairingConfigFileName = 'pairing.json'
 
 function windowsSystemExecutable(name) {
   const windowsRoot = process.env.SystemRoot || process.env.WINDIR
@@ -49,7 +52,26 @@ function textOption(options, key, fallback = '') {
 }
 
 function tokenIsValid(value) {
-  return typeof value === 'string' && value.length >= 32 && !/[\s\r\n]/.test(value)
+  return typeof value === 'string' && value.length >= 32 && !/\s/.test(value)
+}
+
+function defaultHermesHome(environment = process.env) {
+  const configured = String(environment.HERMES_HOME || '').trim()
+  if (configured) return resolve(configured)
+
+  const home = String(environment.USERPROFILE || environment.HOME || homedir()).trim() || homedir()
+  if (process.platform === 'win32') {
+    return join(String(environment.LOCALAPPDATA || environment.APPDATA || home), 'hermes')
+  }
+  if (process.platform === 'darwin') {
+    return join(String(environment.XDG_CONFIG_HOME || join(home, 'Library', 'Application Support')), 'hermes')
+  }
+  return join(String(environment.XDG_CONFIG_HOME || join(home, '.config')), 'hermes')
+}
+
+export function defaultPairingConfigPath(options = {}) {
+  if (options.pairingConfigPath) return resolve(options.pairingConfigPath)
+  return join(defaultHermesHome(options.environment), 'hermes-hub', pairingConfigFileName)
 }
 
 let cachedWindowsUserSid = ''
@@ -135,9 +157,41 @@ function approvalTokenEntries(lines) {
     .filter(entry => entry.line.startsWith(prefix))
 }
 
+function localPairingToken(path, options = {}) {
+  if (!existsSync(path)) return ''
+  hardenPrivateEnvFile(path, options)
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    throw new Error('Local pairing configuration is malformed.')
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.schemaVersion !== pairingConfigSchemaVersion) {
+    throw new Error('Local pairing configuration schema is unsupported.')
+  }
+  if (!tokenIsValid(parsed.approvalToken)) {
+    throw new Error('Local pairing configuration has no valid approval token.')
+  }
+  return parsed.approvalToken
+}
+
+function writeLocalPairingToken(path, token, options = {}) {
+  writePrivateEnvFile(path, `${JSON.stringify({
+    schemaVersion: pairingConfigSchemaVersion,
+    approvalToken: token,
+  }, null, 2)}\n`, options)
+}
+
+function withoutApprovalToken(lines) {
+  const retained = lines.filter(line => !line.startsWith(`${approvalTokenKey}=`))
+  while (retained.length > 0 && retained.at(-1) === '') retained.pop()
+  return retained
+}
+
 export function ensureRouterEnvFile(path, options = {}) {
   const rotate = options.rotate === true
   const tokenFactory = options.tokenFactory || (() => randomBytes(32).toString('hex'))
+  const pairingConfigPath = defaultPairingConfigPath(options)
   if (existsSync(path)) hardenPrivateEnvFile(path, options)
   const existingText = existsSync(path) ? readFileSync(path, 'utf8') : ''
   const lines = envLines(existingText)
@@ -146,42 +200,53 @@ export function ensureRouterEnvFile(path, options = {}) {
   if (entries.length > 1) {
     throw new Error(`${approvalTokenKey} appears more than once in the Router environment.`)
   }
-  if (!rotate && entries.length === 1) {
-    const token = entries[0].line.slice(approvalTokenKey.length + 1)
-    if (!tokenIsValid(token)) {
-      throw new Error(`${approvalTokenKey} must contain at least 32 non-whitespace characters.`)
-    }
-    return { created: false, rotated: false, path }
+  const legacyToken = entries.length === 1 ? entries[0].line.slice(approvalTokenKey.length + 1) : ''
+  if (legacyToken && !tokenIsValid(legacyToken)) {
+    throw new Error(`${approvalTokenKey} must contain at least 32 non-whitespace characters.`)
+  }
+  const persistedToken = localPairingToken(pairingConfigPath, options)
+  if (persistedToken && legacyToken && persistedToken !== legacyToken) {
+    throw new Error('Local pairing configuration disagrees with the legacy Router approval token.')
   }
 
-  const nextToken = tokenFactory()
+  const generated = !persistedToken && !legacyToken
+  const nextToken = rotate || generated ? tokenFactory() : (persistedToken || legacyToken)
   if (!tokenIsValid(nextToken)) throw new Error('Generated Router approval token is invalid.')
-  const nextLine = `${approvalTokenKey}=${nextToken}`
-  if (entries.length === 1) lines[entries[0].index] = nextLine
-  else {
-    lines.push(nextLine)
+  if (rotate || !persistedToken) writeLocalPairingToken(pairingConfigPath, nextToken, options)
+
+  const retained = withoutApprovalToken(lines)
+  if (!existsSync(path) || entries.length > 0) {
+    writePrivateEnvFile(path, `${retained.join('\n')}\n`, options)
   }
-  writePrivateEnvFile(path, `${lines.join('\n')}\n`, options)
-  return { created: entries.length === 0, rotated: rotate && entries.length === 1, path }
+  return {
+    created: generated,
+    rotated: rotate && Boolean(persistedToken || legacyToken),
+    path,
+    pairingConfigPath,
+  }
 }
 
 export function clearRouterApprovalToken(path, options = {}) {
-  if (!existsSync(path)) return { cleared: false, path }
-  hardenPrivateEnvFile(path, options)
-  const lines = envLines(readFileSync(path, 'utf8'))
-  const entries = approvalTokenEntries(lines)
-  if (entries.length === 0) return { cleared: false, path }
-
-  // Remove every matching entry rather than failing on duplicates. This is an
-  // explicit local recovery action; the next init/run creates exactly one new
-  // token and the normal startup path remains fail-closed for duplicates.
-  const retained = lines.filter(line => !line.startsWith(`${approvalTokenKey}=`))
-  while (retained.length > 0 && retained.at(-1) === '') retained.pop()
-  writePrivateEnvFile(path, `${retained.join('\n')}\n`, options)
-  return { cleared: true, path }
+  const pairingConfigPath = defaultPairingConfigPath(options)
+  let cleared = false
+  if (existsSync(pairingConfigPath)) {
+    hardenPrivateEnvFile(pairingConfigPath, options)
+    rmSync(pairingConfigPath)
+    cleared = true
+  }
+  if (existsSync(path)) {
+    hardenPrivateEnvFile(path, options)
+    const lines = envLines(readFileSync(path, 'utf8'))
+    const entries = approvalTokenEntries(lines)
+    if (entries.length > 0) {
+      writePrivateEnvFile(path, `${withoutApprovalToken(lines).join('\n')}\n`, options)
+      cleared = true
+    }
+  }
+  return { cleared, path, pairingConfigPath }
 }
 
-export function loadRouterEnvFile(path, baseEnvironment = process.env) {
+export function loadRouterEnvFile(path, baseEnvironment = process.env, options = {}) {
   const environment = { ...baseEnvironment }
   const lines = envLines(readFileSync(path, 'utf8'))
   for (let index = 0; index < lines.length; index += 1) {
@@ -194,6 +259,15 @@ export function loadRouterEnvFile(path, baseEnvironment = process.env) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error('Router environment contains an invalid key.')
     environment[key] = rawLine.slice(separator + 1)
   }
+  const approvalToken = localPairingToken(
+    defaultPairingConfigPath({
+      ...options,
+      environment: { ...(options.environment || {}), ...environment },
+    }),
+    options,
+  )
+  if (approvalToken) environment[approvalTokenKey] = approvalToken
+  else delete environment[approvalTokenKey]
   return environment
 }
 
@@ -264,7 +338,7 @@ export async function runApprovedGatewayInstaller(options = {}) {
     throw new Error('pair-gateway requires a valid --request-id <pair-id>.')
   }
   hardenPrivateEnvFile(envFile, options)
-  const environment = loadRouterEnvFile(envFile, options.baseEnvironment || process.env)
+  const environment = loadRouterEnvFile(envFile, options.baseEnvironment || process.env, options)
   const approvalToken = environment[approvalTokenKey]
   if (!tokenIsValid(approvalToken)) {
     throw new Error('The private Router environment has no valid approval token; run init and restart Router before pairing.')
@@ -359,11 +433,11 @@ function usage() {
     'Hermes Hub local Router environment',
     '',
     'Usage:',
-    '  node router-local-env.mjs init [--router-env <path>]',
-    '  node router-local-env.mjs run [--router-env <path>]',
-    '  node router-local-env.mjs rotate-approval-token [--router-env <path>]',
-    '  node router-local-env.mjs clear-approval-token [--router-env <path>]',
-    '  node router-local-env.mjs pair-gateway --installer <verified-installer-path> --request-id <pair-id> [--router <loopback-url>] [--source-base <Router package mirror>] [--router-env <path>]',
+    '  node router-local-env.mjs init [--router-env <path>] [--pairing-config <path>]',
+    '  node router-local-env.mjs run [--router-env <path>] [--pairing-config <path>]',
+    '  node router-local-env.mjs rotate-approval-token [--router-env <path>] [--pairing-config <path>]',
+    '  node router-local-env.mjs clear-approval-token [--router-env <path>] [--pairing-config <path>]',
+    '  node router-local-env.mjs pair-gateway --installer <verified-installer-path> --request-id <pair-id> [--router <loopback-url>] [--source-base <Router package mirror>] [--router-env <path>] [--pairing-config <path>]',
     '',
     'Hermes Hub monorepo usage:',
     '  node apps/hermes-hub-server-router/router-local-env.mjs init [--router-env <path>]',
@@ -376,8 +450,8 @@ function usage() {
   ].join('\n')
 }
 
-async function runRouter(cwd, envFile) {
-  const environment = loadRouterEnvFile(envFile)
+async function runRouter(cwd, envFile, options = {}) {
+  const environment = loadRouterEnvFile(envFile, process.env, options)
   const tsxCli = join(cwd, 'node_modules', 'tsx', 'dist', 'cli.mjs')
   const routerEntryCandidates = [
     join(cwd, 'src', 'bridgeServer.ts'),
@@ -423,18 +497,23 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   }
   const cwd = resolve(options.cwd || process.cwd())
   const envFile = resolve(cwd, textOption(parsed, 'router-env', defaultEnvFile(cwd)))
+  const pairingConfigPath = resolve(
+    cwd,
+    textOption(parsed, 'pairing-config', defaultPairingConfigPath(options)),
+  )
+  const localOptions = { ...options, pairingConfigPath }
   if (command === 'init') {
-    const result = ensureRouterEnvFile(envFile, options)
+    const result = ensureRouterEnvFile(envFile, localOptions)
     process.stdout.write(`Router environment ready at ${result.path}; approval token ${result.created ? 'generated' : 'reused'}.\n`)
     return
   }
   if (command === 'rotate-approval-token') {
-    const result = ensureRouterEnvFile(envFile, { ...options, rotate: true })
+    const result = ensureRouterEnvFile(envFile, { ...localOptions, rotate: true })
     process.stdout.write(`Router approval token rotated in ${result.path}; the value was not printed.\n`)
     return
   }
   if (command === 'clear-approval-token') {
-    const result = clearRouterApprovalToken(envFile, options)
+    const result = clearRouterApprovalToken(envFile, localOptions)
     process.stdout.write(
       result.cleared
         ? `Router approval token cleared from ${result.path}; run init or run to generate a new value.\n`
@@ -444,7 +523,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   }
   if (command === 'pair-gateway') {
     const result = await runApprovedGatewayInstaller({
-      ...options,
+      ...localOptions,
       envFile,
       installer: textOption(parsed, 'installer'),
       requestId: textOption(parsed, 'request-id'),
@@ -455,8 +534,8 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     return
   }
   if (command === 'run') {
-    ensureRouterEnvFile(envFile, options)
-    await runRouter(cwd, envFile)
+    ensureRouterEnvFile(envFile, localOptions)
+    await runRouter(cwd, envFile, localOptions)
     return
   }
   throw new Error(`Unknown Router environment command: ${command}`)
