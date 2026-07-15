@@ -1,6 +1,7 @@
+import { spawnSync } from 'node:child_process'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { WebSocketServer } from 'ws'
 import { BoundedSseWriter } from './core/http/boundedSseWriter.js'
@@ -670,6 +671,56 @@ function requireDiagnosticsReadApproval(request: IncomingMessage): void {
 
 function requireOperatorApproval(request: IncomingMessage): void {
   requireAgentApproval(request)
+}
+
+function headerValue(request: IncomingMessage, name: string): string {
+  const value = request.headers[name]
+  return Array.isArray(value) ? String(value[0] || '') : String(value || '')
+}
+
+function isLoopbackPeer(request: IncomingMessage): boolean {
+  const address = String(request.socket.remoteAddress || '').trim().toLowerCase()
+  return address === '::1' || address === '127.0.0.1' || address.startsWith('::ffff:127.')
+}
+
+function localHermesPairingConfigPath(): string {
+  const configured = String(process.env.HERMES_HUB_LOCAL_PAIRING_CONFIG_PATH || '').trim()
+  if (configured) return resolve(configured)
+
+  const command = String(process.env.HERMES_COMMAND || '').trim() || 'hermes'
+  const result = spawnSync(command, ['config', 'path'], {
+    encoding: 'utf8',
+    shell: false,
+    windowsHide: true,
+    timeout: 10_000,
+  })
+  const configPath = result.status === 0
+    ? String(result.stdout || '').trim().split(/\r?\n/).filter(Boolean).at(-1)
+    : ''
+  if (!configPath) {
+    throw Object.assign(new Error('Local Router could not resolve the Hermes configuration path for approval bootstrap'), {
+      statusCode: 503,
+      code: 'local_approval_bootstrap_unavailable',
+    })
+  }
+  return join(dirname(resolve(configPath)), 'hermes-hub', 'pairing.json')
+}
+
+function synchronizeLocalApprovalConfiguration(request: IncomingMessage): void {
+  // This endpoint is intentionally not an operator-authenticated route: it is
+  // the recovery path used before the CLI has a token. It is limited to a
+  // direct loopback peer, rejects browser-originated requests, and never
+  // returns the token or accepts a caller-selected destination path.
+  if (!isLoopbackPeer(request) || headerValue(request, 'origin') || headerValue(request, 'x-hermes-hub-local-bootstrap') !== '1') {
+    throw Object.assign(new Error('Local approval bootstrap is available only to the local Gateway CLI'), {
+      statusCode: 403,
+      code: 'local_approval_bootstrap_forbidden',
+    })
+  }
+  writePrivateTextFileAtomicSync(
+    localHermesPairingConfigPath(),
+    `${JSON.stringify({ schemaVersion: 1, approvalToken: agentApprovalToken }, null, 2)}\n`,
+  )
 }
 
 function diagnosticsFilenameSegment(value: string, fallback: string): string {
@@ -1690,6 +1741,16 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
     } else {
       sendJson(response, 200, created)
     }
+    return true
+  }
+
+  if (pathname === '/router/pairing/local-approval-bootstrap' && request.method === 'POST') {
+    synchronizeLocalApprovalConfiguration(request)
+    logRouter('info', 'Local Gateway approval configuration synchronized', {
+      source: 'loopback-cli',
+    })
+    response.writeHead(204)
+    response.end()
     return true
   }
 

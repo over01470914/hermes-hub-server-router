@@ -308,12 +308,12 @@ export function buildPairingPrompt(record: PairingRequestRecord): string {
     '3. Load `hermes-hub-gateway-pair`, then run the CLI health step. It verifies the Hermes CLI and Hermes Gateway, enables the local API server when needed, restarts Gateway, and confirms the local Hermes API is healthy. Allow normal host permissions, loopback HTTP, public HTTPS, OS-temp writes, and Hermes plugin installation.',
     '   hermes-hub-gateway doctor --runtime hermes',
     '',
-    '4. Only after doctor succeeds, run the pairing command exactly once. The CLI owns deterministic release validation, installer download/hash verification, approval, configuration, restart, online verification, and rollback. Do not generate a helper or call install.mjs directly.',
+    '4. Only after doctor succeeds, run the pairing command exactly once. For a loopback Router, the CLI asks Router to repair a missing or malformed local approval configuration without printing or exposing its token. The CLI owns deterministic release validation, installer download/hash verification, approval, configuration, restart, online verification, and rollback. Do not generate a helper or call install.mjs directly. Do not create a token or edit a pairing configuration.',
     `   hermes-hub-gateway pair --runtime hermes --router "${router}" --request-id "${record.requestId}"`,
     '',
     '5. If skill install, npm install, or doctor fails before pairing starts, report the named failed check and the CLI NEXT command; it is safe to repair and retry that preflight. If pair starts and returns a failure, relay its sanitized output verbatim. Do not add an automatic retry, alternate URL, or pairing mutation.',
     '',
-    '5. On success, return only the CLI’s eight-digit code line. Do not claim success from Router state, a previous code, or any text outside that command result.',
+    '6. On success, return only the CLI final eight-digit code line. Do not claim success from Router state, a previous code, or any text outside that command result.',
   ].join('\n')
 }
 

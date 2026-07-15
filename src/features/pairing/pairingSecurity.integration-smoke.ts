@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { once } from 'node:events'
-import { stat } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -129,6 +129,7 @@ const repositoryRoot = join(routerPackageRoot, '../..')
 const port = await reserveLoopbackPort()
 const workdir = await mkdtemp(join(tmpdir(), 'hermes-hub-pairing-security-'))
 const pairingStorePath = join(workdir, 'state', 'pairing-store.json')
+const localApprovalConfigPath = join(workdir, 'hermes-home', 'hermes-hub', 'pairing.json')
 const baseUrl = `http://127.0.0.1:${port}`
 const router = startRouter(repositoryRoot, routerPackageRoot, {
   ...process.env,
@@ -139,6 +140,7 @@ const router = startRouter(repositoryRoot, routerPackageRoot, {
   HERMES_HUB_BRIDGE_SECRET: 'pairing-security-smoke-bridge-secret',
   HERMES_HUB_PAIRING_CODE: '00000000',
   HERMES_HUB_AGENT_APPROVAL_TOKEN: 'pairing-security-smoke-approval-' + 'x'.repeat(32),
+  HERMES_HUB_LOCAL_PAIRING_CONFIG_PATH: localApprovalConfigPath,
   HERMES_HUB_PAIRING_STORE_PATH: pairingStorePath,
   HERMES_HUB_SESSION_METADATA_STORE_PATH: join(workdir, 'session-metadata.json'),
   HERMES_HUB_DIAGNOSTICS_DIR: join(workdir, 'diagnostics'),
@@ -147,6 +149,29 @@ const router = startRouter(repositoryRoot, routerPackageRoot, {
 
 try {
   await waitForRouter(baseUrl, router)
+
+  const browserOriginBootstrap = await fetch(`${baseUrl}/router/pairing/local-approval-bootstrap`, {
+    method: 'POST',
+    headers: {
+      origin: 'https://untrusted.example.test',
+      'x-hermes-hub-local-bootstrap': '1',
+    },
+  })
+  assert.equal(browserOriginBootstrap.status, 403, 'browser-originated requests must not bootstrap local approval')
+
+  const bootstrap = await fetch(`${baseUrl}/router/pairing/local-approval-bootstrap`, {
+    method: 'POST',
+    headers: { 'x-hermes-hub-local-bootstrap': '1' },
+  })
+  assert.equal(bootstrap.status, 204)
+  assert.equal(await bootstrap.text(), '', 'approval bootstrap must not return a token')
+  const localApproval = JSON.parse(await readFile(localApprovalConfigPath, 'utf8')) as {
+    schemaVersion?: number
+    approvalToken?: string
+  }
+  assert.equal(localApproval.schemaVersion, 1)
+  assert.equal(localApproval.approvalToken, 'pairing-security-smoke-approval-' + 'x'.repeat(32))
+  await assertPrivateStore(localApprovalConfigPath)
 
   const missingRequestId = await fetch(`${baseUrl}/router/pairing/claim`, {
     method: 'POST',
