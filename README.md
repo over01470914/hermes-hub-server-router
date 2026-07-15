@@ -92,22 +92,18 @@ immutable public release repository, commit, URLs, installer bytes, and SHA-256.
 An Agent uses the public content-addressed release in production without
 assuming the Router checkout layout or deployment base path.
 
-The pairing prompt requires the installed `hermes-hub-gateway-pairing` Skill.
-It loads `scripts/pair.mjs` from the loaded Skill's `skill_dir` and invokes that
-wrapper exactly once; it never asks an Agent to create a temporary helper. The
-Skill's local release policy pins the immutable Gateway repository commit,
-installer byte count, and SHA-256. Its wrapper verifies Router health equality,
-downloads without redirects, validates raw bytes, and launches one direct child
-with shell execution disabled. It forbids manual approval probes, retries,
-alternate URLs, and recovery commands after an error.
-The wrapper must run in normal terminal permission mode with loopback HTTP,
-public HTTPS, OS-temp writes, and host plugin installation; a network-isolated
-terminal is not a bootstrap attempt. It checks only that the approval credential
-reached its inherited environment and never prints it. Installer failures
-preserve concrete official failure text after removing credentials, token-like
-values, and absolute paths. The wrapper resolves Hermes through its unchanged
-environment and PATH without embedding a username, drive, home path, checkout,
-shell, or service manager. Git and pnpm are not production dependencies.
+The pairing prompt follows the published GitHub-skill plus npm-CLI pattern: it
+first installs/loads `hermes-hub-gateway-pair` from the public GitHub skill
+source, then runs `npm install -g @over01470914/hermes-hub-gateway@latest` and
+`hermes-hub-gateway doctor --runtime hermes`. This refreshes a stale CLI,
+verifies the Hermes CLI and Gateway, enables the loopback API when needed, restarts Gateway, and
+checks local API health before a pairing mutation begins. The later `pair`
+command owns the same immutable release-policy comparison, no-redirect
+download, byte/SHA-256 verification, and one direct installer child as before.
+It forbids manual approval probes, alternate URLs, generated helpers, and any
+automatic retry after the pair mutation starts. A failed npm-install/doctor preflight
+returns a named failure plus a safe `NEXT:` command; that preflight may be
+repaired and retried. Credentials and absolute host paths are never printed.
 The Router accepts both prefixed requests and requests whose trusted reverse
 proxy has already removed that prefix.
 

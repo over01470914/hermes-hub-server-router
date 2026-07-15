@@ -13,11 +13,9 @@ import { readBridgeConfig, issueBridgeToken, verifyBridgeToken, bearerToken, typ
 import { requireGatewayBoundBridge } from './core/security/bridgePolicy.js'
 import { DiagnosticsPayloadError, normalizeDiagnosticsReceipt, summarizeDiagnosticsReceipt } from './features/diagnostics/diagnosticsReceipt.js'
 import {
-  gatewayPluginPublicUrls,
   gatewayPluginReleaseArtifact,
-  gatewayPluginReleaseUrls,
+  gatewayPluginNpmPackage,
   gatewayPluginRepositoryUrl,
-  loadGatewayPluginSource,
 } from './features/gateway/gatewayPluginSource.js'
 import { GatewayRegistry, type GatewayActivationReservation, type GatewayRpcResponse } from './features/gateway/gatewayRegistry.js'
 import { HermesGatewayRepository } from './features/gateway/hermesGatewayRepository.js'
@@ -1607,11 +1605,10 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
       hermesAgentsOnline: onlineAgents.size,
       pairing: 'prompt-code-claim/v2',
       gatewayPlugin: {
-        ...gatewayPluginPublicUrls(routerUrl),
+        skillsRepositoryUrl: gatewayPluginRepositoryUrl,
+        npmPackage: gatewayPluginNpmPackage,
         release: {
-          repositoryUrl: gatewayPluginRepositoryUrl,
           ...gatewayPluginReleaseArtifact,
-          ...gatewayPluginReleaseUrls,
         },
       },
       debugGateway: { enabled: Boolean(debugGateway) },
@@ -1890,13 +1887,6 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   const { pathname, search, url } = getPath(request)
-
-  const gatewayPluginSource = await loadGatewayPluginSource(request.method, pathname)
-  if (gatewayPluginSource) {
-    response.writeHead(gatewayPluginSource.status, gatewayPluginSource.headers)
-    response.end(gatewayPluginSource.body)
-    return
-  }
 
   if (await handleRouter(request, response, pathname, url)) return
 

@@ -72,21 +72,15 @@ assert.equal(
   'https://router.example.test/router-dev',
   'operator-configured Router base paths must be preserved'
 )
-assert.match(pathRequest.prompt, /Load the installed `hermes-hub-gateway-pairing` skill before taking any action/)
-assert.match(pathRequest.prompt, /https:\/\/github\.com\/over01470914\/hermes-hub-gateway-plugin/)
-assert.match(pathRequest.prompt, /hermes skills install "https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/main\/skills\/hermes-hub-gateway-pairing\/SKILL\.md" --yes/)
-assert.match(pathRequest.prompt, /`scripts\/`, `references\/`, and `templates\/` beside `SKILL\.md`/)
-assert.match(pathRequest.prompt, /loaded skill's `skill_dir`/)
-assert.match(pathRequest.prompt, /NODE_USE_ENV_PROXY=1/)
-assert.match(pathRequest.prompt, /HTTP_PROXY.*HTTPS_PROXY/)
-assert.match(pathRequest.prompt, /node "<skill_dir>\/scripts\/pair\.mjs" --router "https:\/\/router\.example\.test\/router-dev"/)
-assert.match(pathRequest.prompt, /Do not generate, write, copy, or modify a helper script/)
-assert.match(pathRequest.prompt, /Do not add a retry, alternate URL, or pairing mutation/)
-assert.match(pathRequest.prompt, /normal-permission terminal invocation/)
-assert.doesNotMatch(
-  pathRequest.prompt,
-  /raw\.githubusercontent\.com\/(?!over01470914\/hermes-hub-gateway-plugin\/main\/skills\/hermes-hub-gateway-pairing\/SKILL\.md)/,
-)
+assert.match(pathRequest.prompt, /npm install -g @over01470914\/hermes-hub-gateway@latest/)
+assert.match(pathRequest.prompt, /Load `hermes-hub-gateway-pair`/)
+assert.match(pathRequest.prompt, /hermes skills install "https:\/\/raw\.githubusercontent\.com\/over01470914\/hermes-hub-gateway-plugin\/main\/skills\/hermes-hub-gateway-pair\/SKILL\.md" --yes/)
+assert.match(pathRequest.prompt, /hermes-hub-gateway doctor --runtime hermes/)
+assert.match(pathRequest.prompt, /hermes-hub-gateway pair --runtime hermes --router "https:\/\/router\.example\.test\/router-dev"/)
+assert.match(pathRequest.prompt, /Do not use npx/)
+assert.match(pathRequest.prompt, /Do not generate a helper or call install\.mjs directly/)
+assert.match(pathRequest.prompt, /Do not add an automatic retry, alternate URL, or pairing mutation/)
+assert.match(pathRequest.prompt, /Allow normal host permissions/)
 assert.doesNotMatch(pathRequest.prompt, /new uniquely named \.mjs helper/)
 assert.doesNotMatch(pathRequest.prompt, /<verified-installer-path>|HERMES_COMMAND|HERMES_HUB_AGENT_APPROVAL_TOKEN/)
 assert.doesNotMatch(pathRequest.prompt, /winget install|requires Git for Windows|corepack pnpm|pnpm router:|hermes gateway stop/)

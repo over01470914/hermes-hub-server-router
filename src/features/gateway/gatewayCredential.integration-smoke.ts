@@ -11,7 +11,7 @@ import { WebSocket } from 'ws'
 
 import {
   gatewayPluginReleaseArtifact,
-  gatewayPluginReleaseUrls,
+  gatewayPluginNpmPackage,
   gatewayPluginRepositoryUrl,
 } from './gatewayPluginSource.js'
 
@@ -233,33 +233,31 @@ try {
 
   const health = await fetchJson<{
     gatewayPlugin: {
-      sourceUrl: string
-      installerUrl: string
-      manifestUrl: string
+      skillsRepositoryUrl: string
+      npmPackage: {
+        name: string
+        version: string
+        runtimeManifestSha256: string
+      }
       release: {
-        repositoryUrl: string
-        commit: string
-        installerBytes: number
-        installerSha256: string
-        sourceUrl: string
-        installerUrl: string
-        manifestUrl: string
+        packageName: string
+        packageVersion: string
+        runtimeManifestSha256: string
       }
     }
   }>(`${baseUrl}/router/health`)
   assert.deepEqual(health.gatewayPlugin, {
-    sourceUrl: `${baseUrl}/apps/hermes-hub-gateway-plugin/`,
-    installerUrl: `${baseUrl}/apps/hermes-hub-gateway-plugin/install.mjs`,
-    manifestUrl: `${baseUrl}/apps/hermes-hub-gateway-plugin/package-manifest.json`,
+    skillsRepositoryUrl: gatewayPluginRepositoryUrl,
+    npmPackage: gatewayPluginNpmPackage,
     release: {
-      repositoryUrl: gatewayPluginRepositoryUrl,
       ...gatewayPluginReleaseArtifact,
-      ...gatewayPluginReleaseUrls,
     },
   })
-  const advertisedInstaller = await fetch(health.gatewayPlugin.installerUrl)
-  assert.equal(advertisedInstaller.status, 200)
-  assert.match(await advertisedInstaller.text(), /^#!\/usr\/bin\/env node/)
+  assert.equal(
+    (await fetch(`${baseUrl}/apps/hermes-hub-gateway-plugin/install.mjs`)).status,
+    404,
+    'Router must not serve executable Gateway runtime files',
+  )
 
   const firstRequest = await fetchJson<{ requestId: string }>(`${baseUrl}/router/pairing/request`, {
     method: 'POST',
@@ -382,7 +380,7 @@ try {
     checks: [
       'first Gateway stays provisional until Client claim',
       'Router health counts only active routable Agents',
-      'Router health advertises a reachable Gateway Plugin installer mapping',
+      'Router health advertises GitHub skills and npm Gateway package metadata only',
       'existing Bridge traffic stays on the active route during rotation',
       'claim promotes the candidate and closes the old WSS',
       'claim retries return the same bridge credential and repeat runtime reconciliation safely',
