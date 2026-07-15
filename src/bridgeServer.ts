@@ -674,27 +674,60 @@ function requireOperatorApproval(request: IncomingMessage): void {
   requireAgentApproval(request)
 }
 
-async function persistDiagnostics(payload: BridgeTokenPayload, input: Record<string, unknown>): Promise<{ reportId: string; receivedAt: string; entries: number }> {
+function diagnosticsFilenameSegment(value: string, fallback: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32)
+  return normalized || fallback
+}
+
+function diagnosticsReportId(payload: BridgeTokenPayload, receivedAt: Date): string {
+  const timestamp = receivedAt.toISOString().replace(/[-:.]/g, '')
+  const user = diagnosticsFilenameSegment(payload.user, 'user')
+  const deviceId = diagnosticsFilenameSegment(payload.deviceId, 'device')
+  return `diag_${timestamp}_${user}_${deviceId}_${randomUUID().replace(/-/g, '')}`
+}
+
+function isDiagnosticsReportId(reportId: string): boolean {
+  return /^diag_[a-z0-9]+_[a-f0-9]{8}$/i.test(reportId) ||
+    /^diag_\d{8}T\d{9}Z_[a-z0-9-]{1,32}_[a-z0-9-]{1,32}_[a-f0-9]{32}$/i.test(reportId)
+}
+
+async function persistDiagnostics(payload: BridgeTokenPayload, input: Record<string, unknown>): Promise<{ reportId: string; fileName: string; receivedAt: string; entries: number }> {
   const receipt = normalizeDiagnosticsReceipt(input)
   const summary = summarizeDiagnosticsReceipt(receipt)
-  const reportId = `diag_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`
-  const receivedAt = new Date().toISOString()
+  const receivedAt = new Date()
+  const receivedAtIso = receivedAt.toISOString()
+  const reportId = diagnosticsReportId(payload, receivedAt)
+  const fileName = `${reportId}.json`
   const hermesAgentId = selectedHermesAgentId(payload)
   const record = {
-    schemaVersion: 'hermes-hub-diagnostics/v1',
+    schemaVersion: 'hermes-hub-diagnostics/v2',
     reportId,
-    receivedAt,
+    fileName,
+    receivedAt: receivedAtIso,
+    sortKey: receivedAtIso,
     routerInstanceId,
     hermesAgentId,
+    submittedBy: {
+      user: payload.user,
+      deviceId: payload.deviceId
+    },
     entryCount: summary.entryCount,
     metadata: receipt.metadata,
     entries: receipt.entries
   }
   const serialized = `${JSON.stringify(record, null, 2)}\n`
   await mkdir(diagnosticsDir, { recursive: true })
-  await writeFile(join(diagnosticsDir, `${reportId}.json`), serialized, 'utf8')
+  await writeFile(join(diagnosticsDir, fileName), serialized, 'utf8')
   logRouter('info', 'Diagnostics report received and persisted', {
     reportId,
+    fileName,
+    sortKey: receivedAtIso,
+    submittedBy: { user: payload.user, deviceId: payload.deviceId },
     hermesAgentId,
     entryCount: summary.entryCount,
     levels: summary.levels,
@@ -703,11 +736,11 @@ async function persistDiagnostics(payload: BridgeTokenPayload, input: Record<str
     receiptBytes: summary.receiptBytes,
     persistedBytes: Buffer.byteLength(serialized, 'utf8')
   })
-  return { reportId, receivedAt, entries: summary.entryCount }
+  return { reportId, fileName, receivedAt: receivedAtIso, entries: summary.entryCount }
 }
 
 async function readDiagnostics(reportId: string): Promise<unknown> {
-  if (!/^diag_[a-z0-9]+_[a-f0-9]{8}$/i.test(reportId)) throw new Error('Invalid diagnostics report id')
+  if (!isDiagnosticsReportId(reportId)) throw new Error('Invalid diagnostics report id')
   const raw = await readFile(join(diagnosticsDir, `${reportId}.json`), 'utf8')
   logRouter('info', 'Diagnostics report read', { reportId })
   return JSON.parse(raw) as unknown
@@ -1681,7 +1714,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
     return true
   }
 
-  const diagnosticsMatch = pathname.match(/^\/router\/diagnostics\/(diag_[a-z0-9]+_[a-f0-9]{8})$/i)
+  const diagnosticsMatch = pathname.match(/^\/router\/diagnostics\/(diag_[a-z0-9_-]+)$/i)
   if (diagnosticsMatch && request.method === 'GET') {
     requireDiagnosticsReadApproval(request)
     sendJson(response, 200, await readDiagnostics(decodeURIComponent(diagnosticsMatch[1])))

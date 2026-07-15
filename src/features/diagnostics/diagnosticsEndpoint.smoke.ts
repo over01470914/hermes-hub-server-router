@@ -140,7 +140,7 @@ const env: NodeJS.ProcessEnv = {
   HERMES_HUB_LOG_LEVEL: 'info'
 }
 const tsxCli = join(repositoryRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs')
-const routerEntry = join(repositoryRoot, 'apps', 'hermes-hub-server-router', 'src', 'bridgeServer.ts')
+const routerEntry = join(repositoryRoot, 'apps', 'server-router', 'src', 'bridgeServer.ts')
 const child = spawn(process.execPath, [tsxCli, routerEntry], {
   cwd: repositoryRoot,
   env,
@@ -172,6 +172,8 @@ try {
     metadata: {
       appVersion: '0.1.0-smoke',
       platform: 'windows',
+      runtimeLogFileName: 'hermes-hub-client-runtime.log',
+      runtimeLogSource: 'local-runtime-file',
       unexpected: 'not persisted'
     }
   })
@@ -317,17 +319,31 @@ try {
   assert.equal(uploadedResponse.status, 200)
   const uploaded = await uploadedResponse.json() as {
     reportId: string
+    fileName: string
     receivedAt: string
     entries: number
   }
-  assert.match(uploaded.reportId, /^diag_[a-z0-9]+_[a-f0-9]{8}$/i)
+  assert.match(uploaded.reportId, /^diag_\d{8}T\d{9}Z_diagnostics-smoke-user_device-diagnostics-smoke_[a-f0-9]{32}$/i)
+  assert.equal(uploaded.fileName, `${uploaded.reportId}.json`)
   assert.ok(Date.parse(uploaded.receivedAt) > 0)
   assert.equal(uploaded.entries, 1)
 
-  const persistedText = await readFile(join(diagnosticsDir, `${uploaded.reportId}.json`), 'utf8')
+  const persistedText = await readFile(join(diagnosticsDir, uploaded.fileName), 'utf8')
   const persisted = JSON.parse(persistedText) as Record<string, unknown>
   assert.equal(persisted.entryCount, 1)
   assert.equal(persisted.hermesAgentId, 'agent-diagnostics-smoke')
+  assert.equal(persisted.fileName, uploaded.fileName)
+  assert.equal(persisted.sortKey, uploaded.receivedAt)
+  assert.deepEqual(persisted.submittedBy, {
+    user: 'diagnostics-smoke-user',
+    deviceId: 'device-diagnostics-smoke'
+  })
+  assert.deepEqual(persisted.metadata, {
+    appVersion: '0.1.0-smoke',
+    platform: 'windows',
+    runtimeLogFileName: 'hermes-hub-client-runtime.log',
+    runtimeLogSource: 'local-runtime-file'
+  })
   assert.equal('logText' in persisted, false)
   assert.equal('remoteAddress' in persisted, false)
   assert.doesNotMatch(persistedText, /report-secret-value|private user message body|legacy duplicate/)
@@ -353,6 +369,7 @@ try {
     checks: [
       'unauthenticated upload rejected',
       'authenticated upload persisted',
+      'timestamped unique filename and authenticated user/device sort identity persisted',
       'Flutter entries array counted',
       'free-form logText ignored',
       'server-side redaction persisted',

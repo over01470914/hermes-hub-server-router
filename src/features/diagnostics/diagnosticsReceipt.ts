@@ -14,7 +14,9 @@ const allowedMetadataKeys = new Set([
   'gatewayId',
   'activeSessionId',
   'platform',
-  'timestamp'
+  'timestamp',
+  'runtimeLogFileName',
+  'runtimeLogSource'
 ])
 
 const sensitiveKeyPattern = /(^|[_-])(authorization|cookie|password|secret|token|approval|pairing(?:code)?|api[_-]?key|private[_-]?key|body(?:base64)?|content|prompt|output|transcript|comment|attachment)([_-]|$)/i
