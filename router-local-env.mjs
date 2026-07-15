@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url'
 const approvalTokenKey = 'HERMES_HUB_AGENT_APPROVAL_TOKEN'
 const pairingConfigSchemaVersion = 1
 const pairingConfigFileName = 'pairing.json'
+const routerPackageRoot = dirname(fileURLToPath(import.meta.url))
 
 function windowsSystemExecutable(name) {
   const windowsRoot = process.env.SystemRoot || process.env.WINDIR
@@ -453,15 +454,10 @@ function usage() {
 async function runRouter(cwd, envFile, options = {}) {
   const environment = loadRouterEnvFile(envFile, process.env, options)
   const tsxCli = join(cwd, 'node_modules', 'tsx', 'dist', 'cli.mjs')
-  const routerEntryCandidates = [
-    join(cwd, 'src', 'bridgeServer.ts'),
-    join(cwd, 'apps', 'hermes-hub-server-router', 'src', 'bridgeServer.ts'),
-    join(cwd, 'apps', 'server-router', 'src', 'bridgeServer.ts'),
-  ]
-  const routerEntry = routerEntryCandidates.find(candidate => existsSync(candidate))
+  const routerEntry = join(routerPackageRoot, 'src', 'bridgeServer.ts')
   if (!existsSync(tsxCli)) throw new Error('tsx is not installed. Run pnpm install first.')
-  if (!routerEntry) {
-    throw new Error('Router source was not found in a standalone checkout or Hermes Hub monorepo.')
+  if (!existsSync(routerEntry)) {
+    throw new Error(`Router source was not found beside ${fileURLToPath(import.meta.url)}.`)
   }
   await preflightRouterStart(environment)
   const child = spawn(process.execPath, [tsxCli, routerEntry], {

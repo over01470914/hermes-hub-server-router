@@ -316,7 +316,7 @@ async function download(url, maximumBytes, label) {
 }
 
 async function downloadRuntime(baseUrl, workdir, dryRun) {
-  const root = join(workdir, 'apps', 'server-router')
+  const root = workdir
   if (dryRun) {
     log(`dry-run download ${SERVER_FILES.length} files from ${baseUrl} -> ${root}`)
     return

@@ -117,7 +117,8 @@ function parseSseFrames(text: string): Array<Record<string, unknown>> {
     .filter(frame => typeof frame.type === 'string')
 }
 
-const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../../..')
+const routerPackageRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..')
+const repositoryRoot = join(routerPackageRoot, '../..')
 const port = await reserveLoopbackPort()
 const workdir = await mkdtemp(join(tmpdir(), 'hermes-hub-router-diagnostics-'))
 const diagnosticsDir = join(workdir, 'diagnostics')
@@ -140,7 +141,7 @@ const env: NodeJS.ProcessEnv = {
   HERMES_HUB_LOG_LEVEL: 'info'
 }
 const tsxCli = join(repositoryRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs')
-const routerEntry = join(repositoryRoot, 'apps', 'server-router', 'src', 'bridgeServer.ts')
+const routerEntry = join(routerPackageRoot, 'src', 'bridgeServer.ts')
 const child = spawn(process.execPath, [tsxCli, routerEntry], {
   cwd: repositoryRoot,
   env,

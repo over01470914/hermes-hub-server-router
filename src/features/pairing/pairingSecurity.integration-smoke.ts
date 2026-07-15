@@ -27,9 +27,9 @@ interface RouterProcess {
   output: () => string
 }
 
-function startRouter(repositoryRoot: string, environment: NodeJS.ProcessEnv): RouterProcess {
+function startRouter(repositoryRoot: string, routerPackageRoot: string, environment: NodeJS.ProcessEnv): RouterProcess {
   const tsxCli = join(repositoryRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs')
-  const routerEntry = join(repositoryRoot, 'apps', 'server-router', 'src', 'bridgeServer.ts')
+  const routerEntry = join(routerPackageRoot, 'src', 'bridgeServer.ts')
   const child = spawn(process.execPath, [tsxCli, routerEntry], {
     cwd: repositoryRoot,
     env: environment,
@@ -124,12 +124,13 @@ async function assertPrivateStore(path: string): Promise<void> {
   }
 }
 
-const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../../..')
+const routerPackageRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..')
+const repositoryRoot = join(routerPackageRoot, '../..')
 const port = await reserveLoopbackPort()
 const workdir = await mkdtemp(join(tmpdir(), 'hermes-hub-pairing-security-'))
 const pairingStorePath = join(workdir, 'state', 'pairing-store.json')
 const baseUrl = `http://127.0.0.1:${port}`
-const router = startRouter(repositoryRoot, {
+const router = startRouter(repositoryRoot, routerPackageRoot, {
   ...process.env,
   NODE_ENV: 'development',
   HERMES_HUB_ROUTER_HOST: '127.0.0.1',

@@ -83,7 +83,7 @@ assert.doesNotMatch(pathRequest.prompt, /new uniquely named \.mjs helper/)
 assert.doesNotMatch(pathRequest.prompt, /<verified-installer-path>|HERMES_COMMAND|HERMES_HUB_AGENT_APPROVAL_TOKEN/)
 assert.doesNotMatch(pathRequest.prompt, /winget install|requires Git for Windows|corepack pnpm|pnpm router:|hermes gateway stop/)
 assert.doesNotMatch(pathRequest.prompt, /[A-Za-z]:\\|\/Users\/|\/home\//)
-assert.doesNotMatch(pathRequest.prompt, /\/apps\/server-router/)
+assert.doesNotMatch(pathRequest.prompt, /\/apps\/[^/\s]*server-router/)
 
 console.log(JSON.stringify({
   ok: true,

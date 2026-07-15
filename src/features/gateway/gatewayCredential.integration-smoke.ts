@@ -58,9 +58,9 @@ async function stopRouter(router: RouterProcess): Promise<void> {
   if (router.child.exitCode == null && router.child.signalCode == null) router.child.kill('SIGKILL')
 }
 
-function startRouter(repositoryRoot: string, env: NodeJS.ProcessEnv): RouterProcess {
+function startRouter(repositoryRoot: string, routerPackageRoot: string, env: NodeJS.ProcessEnv): RouterProcess {
   const tsxCli = join(repositoryRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs')
-  const routerEntry = join(repositoryRoot, 'apps', 'server-router', 'src', 'bridgeServer.ts')
+  const routerEntry = join(routerPackageRoot, 'src', 'bridgeServer.ts')
   const child = spawn(process.execPath, [tsxCli, routerEntry], {
     cwd: repositoryRoot,
     env,
@@ -194,7 +194,8 @@ interface PairingClaimResponse {
   status: string
 }
 
-const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../../..')
+const routerPackageRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..')
+const repositoryRoot = join(routerPackageRoot, '../..')
 const port = await reserveLoopbackPort()
 const workdir = await mkdtemp(join(tmpdir(), 'hermes-hub-gateway-rotation-'))
 const pairingStorePath = join(workdir, 'pairing-store.json')
@@ -224,7 +225,7 @@ const approvalHeaders = {
   'x-hermes-hub-agent-approval': agentApprovalToken,
 }
 
-let router = startRouter(repositoryRoot, env)
+let router = startRouter(repositoryRoot, routerPackageRoot, env)
 let originalSocket: WebSocket | undefined
 let candidateSocket: WebSocket | undefined
 try {
@@ -368,7 +369,7 @@ try {
   candidateSocket = undefined
   await stopRouter(router)
 
-  router = startRouter(repositoryRoot, env)
+  router = startRouter(repositoryRoot, routerPackageRoot, env)
   await waitForRouter(baseUrl, router)
   const restartedCandidate = await connectGateway(baseUrl, candidateGatewayId, hermesAgentId, candidateGatewayToken)
   candidateSocket = restartedCandidate.socket
