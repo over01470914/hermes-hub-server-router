@@ -1,7 +1,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { RawData, WebSocket } from 'ws'
-import { cleanStreamFrame, elapsedMs, type GatewayRequestMetrics, type RpcStreamFrame, type RpcStreamRequest } from '../../core/protocol/bridgeProtocol.js'
+import { elapsedMs, type GatewayRequestMetrics } from '../../core/protocol/bridgeProtocol.js'
 import { logRouter } from '../../core/observability/routerLogger.js'
 import type { GatewayCredentialState } from '../pairing/pairingStore.js'
 
@@ -33,9 +33,45 @@ export interface GatewayRegistryOptions {
 
 const defaultRegistryOptions: GatewayRegistryOptions = {
   connectionKind: 'hermes-hub-gateway',
-  protocol: 'hermes-hub-gateway-rpc/v1',
-  protocols: ['hermes-hub-gateway-rpc/v1'],
+  protocol: 'hermes-hub-gateway-rpc/v2',
+  protocols: ['hermes-hub-gateway-rpc/v2'],
   helloTimeoutMs: 10_000,
+}
+
+export interface GatewaySessionSubmit {
+  laneId: string
+  submissionId: string
+  text: string
+  deviceId: string
+}
+
+export interface GatewayPromptResponse {
+  laneId: string
+  promptId: string
+  response: string
+}
+
+export interface GatewayNativeAck {
+  accepted: boolean
+  requestType: 'session_submit' | 'session_prompt_response'
+  laneId?: string
+  submissionId?: string
+  sessionId?: string
+  promptId?: string
+  code?: string
+  error?: string
+}
+
+export interface GatewaySessionEvent {
+  eventId: string
+  hermesAgentId: string
+  gatewayId: string
+  laneId: string
+  sessionId?: string
+  submissionId?: string
+  event: string
+  data: Record<string, unknown>
+  sentAt: number
 }
 
 export interface GatewayRpcRequest {
@@ -50,11 +86,6 @@ export interface GatewayRpcResponse {
   headers: Record<string, string>
   bodyBase64: string
   metrics?: GatewayRequestMetrics
-}
-
-export interface GatewayStreamResult {
-  response: GatewayRpcResponse
-  metrics: GatewayRequestMetrics
 }
 
 export interface GatewayHeartbeatResult {
@@ -89,21 +120,22 @@ interface PendingRpc {
   startedAt: number
 }
 
-interface PendingStream {
-  resolve: (result: GatewayStreamResult) => void
-  reject: (error: Error) => void
-  timeout: NodeJS.Timeout
-  startedAt: number
-  onFrame: (frame: RpcStreamFrame) => void
-  terminalResult?: GatewayStreamResult
-  cleanup?: () => void
-}
-
 interface PendingHeartbeat {
   resolve: (result: GatewayHeartbeatResult) => void
   reject: (error: Error) => void
   timeout: NodeJS.Timeout
   startedAt: number
+}
+
+interface PendingNative {
+  resolve: (response: GatewayNativeAck) => void
+  reject: (error: Error) => void
+  timeout: NodeJS.Timeout
+  startedAt: number
+  requestType: GatewayNativeAck['requestType']
+  laneId: string
+  submissionId?: string
+  promptId?: string
 }
 
 interface TrackedGateway extends GatewayState {
@@ -112,8 +144,8 @@ interface TrackedGateway extends GatewayState {
   deviceName: string
   socket?: WebSocket
   pending: Map<string, PendingRpc>
-  pendingStreams: Map<string, PendingStream>
   pendingHeartbeats: Map<string, PendingHeartbeat>
+  pendingNative: Map<string, PendingNative>
   helloTimeout?: NodeJS.Timeout
 }
 
@@ -144,6 +176,85 @@ function cleanRpcResponse(value: unknown): GatewayRpcResponse {
   return { status, headers: cleanHeaders(input.headers), bodyBase64 }
 }
 
+const nativeSessionEvents = new Set([
+  'message.created',
+  'message.updated',
+  'processing.started',
+  'processing.completed',
+  'prompt.requested',
+  'prompt.resolved',
+  'session.resync_required',
+  'error',
+])
+
+function cleanNativeAck(value: Record<string, unknown>, pending: PendingNative): GatewayNativeAck {
+  if (value.requestType !== pending.requestType || typeof value.accepted !== 'boolean') {
+    throw new Error('Gateway native acknowledgement shape is invalid')
+  }
+  if (value.laneId !== pending.laneId) {
+    throw new Error('Gateway native acknowledgement lane mismatch')
+  }
+  if (pending.submissionId && value.submissionId !== pending.submissionId) {
+    throw new Error('Gateway native acknowledgement submission mismatch')
+  }
+  if (pending.promptId && value.promptId !== pending.promptId) {
+    throw new Error('Gateway native acknowledgement prompt mismatch')
+  }
+  return {
+    accepted: value.accepted,
+    requestType: pending.requestType,
+    laneId: pending.laneId,
+    ...(pending.submissionId ? { submissionId: pending.submissionId } : {}),
+    ...(pending.promptId ? { promptId: pending.promptId } : {}),
+    ...(typeof value.sessionId === 'string' && value.sessionId.length <= 256
+      ? { sessionId: value.sessionId }
+      : {}),
+    ...(typeof value.code === 'string' && value.code.length <= 120 ? { code: value.code } : {}),
+    ...(typeof value.error === 'string' && value.error.length <= 500 ? { error: value.error } : {}),
+  }
+}
+
+function cleanSessionEvent(
+  value: Record<string, unknown>,
+  state: Pick<TrackedGateway, 'gatewayId' | 'hermesAgentId'>,
+): GatewaySessionEvent {
+  if (value.gatewayId !== state.gatewayId || value.hermesAgentId !== state.hermesAgentId) {
+    throw new Error('Gateway session event identity mismatch')
+  }
+  const eventId = typeof value.eventId === 'string' && /^evt_[A-Za-z0-9._:-]{8,191}$/.test(value.eventId)
+    ? value.eventId
+    : ''
+  const laneId = typeof value.laneId === 'string' && /^lane_[A-Za-z0-9._:-]{8,191}$/.test(value.laneId)
+    ? value.laneId
+    : ''
+  const event = typeof value.event === 'string' && nativeSessionEvents.has(value.event)
+    ? value.event
+    : ''
+  const data = asRecord(value.data)
+  if (!eventId || !laneId || !event || !data) {
+    throw new Error('Gateway session event shape is invalid')
+  }
+  const sessionId = typeof value.sessionId === 'string' && value.sessionId.length <= 256
+    ? value.sessionId
+    : undefined
+  const submissionId = typeof value.submissionId === 'string' && /^sub_[A-Za-z0-9._:-]{8,191}$/.test(value.submissionId)
+    ? value.submissionId
+    : undefined
+  return {
+    eventId,
+    gatewayId: state.gatewayId,
+    hermesAgentId: state.hermesAgentId,
+    laneId,
+    ...(sessionId ? { sessionId } : {}),
+    ...(submissionId ? { submissionId } : {}),
+    event,
+    data,
+    sentAt: typeof value.sentAt === 'number' && Number.isSafeInteger(value.sentAt)
+      ? value.sentAt
+      : Date.now(),
+  }
+}
+
 function logPath(path: string): string {
   return path.split('?')[0]
 }
@@ -157,6 +268,7 @@ function queryKeys(path: string): string[] {
 
 export class GatewayRegistry {
   private gateways = new Map<string, TrackedGateway>()
+  private sessionEventHandler?: (event: GatewaySessionEvent) => boolean
 
   constructor(private readonly options: GatewayRegistryOptions = defaultRegistryOptions) {}
 
@@ -194,8 +306,8 @@ export class GatewayRegistry {
       mode: 'unknown',
       socket,
       pending: new Map(),
-      pendingStreams: new Map(),
-      pendingHeartbeats: new Map()
+      pendingHeartbeats: new Map(),
+      pendingNative: new Map()
     }
     this.gateways.set(record.gatewayId, state)
     logRouter('info', 'Gateway attached', {
@@ -224,25 +336,25 @@ export class GatewayRegistry {
         closeCode,
         closeReason,
         pendingRpc: state.pending.size,
-        pendingStreams: state.pendingStreams.size,
-        pendingHeartbeats: state.pendingHeartbeats.size
+        pendingHeartbeats: state.pendingHeartbeats.size,
+        pendingNative: state.pendingNative.size,
       })
       for (const [id, pending] of state.pending.entries()) {
         clearTimeout(pending.timeout)
         pending.reject(new Error(reason))
         state.pending.delete(id)
       }
-      for (const [id, pending] of state.pendingStreams.entries()) {
-        clearTimeout(pending.timeout)
-        pending.cleanup?.()
-        if (pending.terminalResult) pending.resolve(pending.terminalResult)
-        else pending.reject(new Error(reason))
-        state.pendingStreams.delete(id)
-      }
       for (const [id, pending] of state.pendingHeartbeats.entries()) {
         clearTimeout(pending.timeout)
         pending.reject(new Error(reason))
         state.pendingHeartbeats.delete(id)
+      }
+      for (const [id, pending] of state.pendingNative.entries()) {
+        clearTimeout(pending.timeout)
+        pending.reject(Object.assign(new Error('Gateway native submission became ambiguous'), {
+          code: 'gateway_submission_ambiguous',
+        }))
+        state.pendingNative.delete(id)
       }
       state.inFlightRpc = 0
     }
@@ -302,6 +414,10 @@ export class GatewayRegistry {
 
   list(): GatewayState[] {
     return [...this.gateways.values()].map(item => this.publicState(item))
+  }
+
+  setSessionEventHandler(handler: (event: GatewaySessionEvent) => boolean): void {
+    this.sessionEventHandler = handler
   }
 
   get(gatewayId: string): GatewayState | null {
@@ -536,7 +652,7 @@ export class GatewayRegistry {
     return new Promise<GatewayRpcResponse>((resolve, reject) => {
       const timeout = setTimeout(() => {
         state.pending.delete(id)
-        state.inFlightRpc = state.pending.size + state.pendingStreams.size
+        state.inFlightRpc = state.pending.size + state.pendingNative.size
         logRouter('warn', 'Gateway RPC timed out', {
           hermesAgentId,
           requestId: id,
@@ -549,12 +665,12 @@ export class GatewayRegistry {
         reject(new Error('Gateway RPC timeout'))
       }, timeoutMs)
       state.pending.set(id, { resolve, reject, timeout, startedAt })
-      state.inFlightRpc = state.pending.size + state.pendingStreams.size
+      state.inFlightRpc = state.pending.size + state.pendingNative.size
       state.socket?.send(message, error => {
         if (!error) return
         clearTimeout(timeout)
         state.pending.delete(id)
-        state.inFlightRpc = state.pending.size + state.pendingStreams.size
+        state.inFlightRpc = state.pending.size + state.pendingNative.size
         logRouter('warn', 'Gateway RPC send failed', {
           hermesAgentId,
           requestId: id,
@@ -567,111 +683,117 @@ export class GatewayRegistry {
     })
   }
 
-  async streamRequestByAgentId(
+  async submitSessionByAgentId(
     hermesAgentId: string,
-    payload: Omit<RpcStreamRequest, 'type' | 'id'>,
-    options: {
-      onFrame: (frame: RpcStreamFrame) => void
-      signal?: AbortSignal
-      upstreamTimeoutMs?: number
-    },
+    payload: GatewaySessionSubmit,
     timeoutMs = 10_000,
-  ): Promise<GatewayStreamResult> {
+  ): Promise<GatewayNativeAck> {
+    return this.nativeRequestByAgentId(
+      hermesAgentId,
+      'session_submit',
+      payload.laneId,
+      {
+        laneId: payload.laneId,
+        submissionId: payload.submissionId,
+        text: payload.text,
+        deviceId: payload.deviceId,
+      },
+      { submissionId: payload.submissionId },
+      timeoutMs,
+    )
+  }
+
+  async respondPromptByAgentId(
+    hermesAgentId: string,
+    payload: GatewayPromptResponse,
+    timeoutMs = 10_000,
+  ): Promise<GatewayNativeAck> {
+    return this.nativeRequestByAgentId(
+      hermesAgentId,
+      'session_prompt_response',
+      payload.laneId,
+      {
+        laneId: payload.laneId,
+        promptId: payload.promptId,
+        response: payload.response,
+      },
+      { promptId: payload.promptId },
+      timeoutMs,
+    )
+  }
+
+  private async nativeRequestByAgentId(
+    hermesAgentId: string,
+    requestType: GatewayNativeAck['requestType'],
+    laneId: string,
+    payload: Record<string, unknown>,
+    correlation: { submissionId?: string; promptId?: string },
+    timeoutMs: number,
+  ): Promise<GatewayNativeAck> {
     const state = this.gatewayForAgent(hermesAgentId)
-    if (!state?.socket || !state.online || state.socket.readyState !== 1) throw new Error('Gateway offline')
-    if (options.signal?.aborted) throw new Error('Client stream disconnected')
-    const id = `stream_${randomUUID()}`
+    if (!state?.socket || !state.online || state.socket.readyState !== 1) {
+      throw Object.assign(new Error('Gateway offline'), { code: 'gateway_offline' })
+    }
+    const requiredCapability = requestType === 'session_submit'
+      ? 'session.message'
+      : 'session.prompt-response'
+    if (!state.capabilities?.includes(requiredCapability)) {
+      throw Object.assign(new Error(`Gateway capability is unavailable: ${requiredCapability}`), {
+        code: 'gateway_capability_unsupported',
+      })
+    }
+    const id = `native_${randomUUID()}`
     const startedAt = Date.now()
-    const upstreamTimeoutMs = options.upstreamTimeoutMs ?? timeoutMs
-    const message = JSON.stringify({ type: 'rpc_stream_request', id, ...payload, timeoutMs: upstreamTimeoutMs } satisfies RpcStreamRequest & { timeoutMs: number })
-    logRouter('info', 'Gateway stream request sent', {
+    const message = JSON.stringify({ type: requestType, id, ...payload })
+    logRouter('info', 'Gateway native session request sent', {
       hermesAgentId,
       requestId: id,
-      method: payload.method,
-      path: logPath(payload.path),
-      queryKeys: queryKeys(payload.path),
+      requestType,
+      laneId,
+      submissionId: correlation.submissionId,
+      promptId: correlation.promptId,
       timeoutMs,
-      upstreamTimeoutMs,
-      bodyBase64Bytes: payload.bodyBase64?.length
     })
-    return new Promise<GatewayStreamResult>((resolve, reject) => {
+    return new Promise<GatewayNativeAck>((resolve, reject) => {
+      const rejectAmbiguous = (reason: string): void => {
+        state.pendingNative.delete(id)
+        state.inFlightRpc = state.pending.size + state.pendingNative.size
+        reject(Object.assign(new Error(reason), { code: 'gateway_submission_ambiguous' }))
+      }
       const timeout = setTimeout(() => {
-        const pending = state.pendingStreams.get(id)
-        state.pendingStreams.delete(id)
-        pending?.cleanup?.()
-        state.inFlightRpc = state.pending.size + state.pendingStreams.size
-        if (state.socket?.readyState === 1) {
-          state.socket.send(JSON.stringify({
-            type: 'rpc_stream_cancel',
-            id,
-            reason: 'router_timeout'
-          }))
-        }
-        logRouter('warn', 'Gateway stream timed out', {
+        logRouter('warn', 'Gateway native session request timed out ambiguously', {
           hermesAgentId,
           requestId: id,
-          method: payload.method,
-          path: logPath(payload.path),
-          queryKeys: queryKeys(payload.path),
-          timeoutMs,
-          latencyMs: elapsedMs(startedAt)
+          requestType,
+          laneId,
+          submissionId: correlation.submissionId,
+          promptId: correlation.promptId,
+          latencyMs: elapsedMs(startedAt),
         })
-        reject(new Error('Gateway stream timeout'))
+        rejectAmbiguous('Gateway native session acknowledgement timed out')
       }, timeoutMs)
-      const abort = () => {
-        const pending = state.pendingStreams.get(id)
-        if (!pending) return
-        const signalReason = options.signal?.reason
-        const signalCode = signalReason && typeof signalReason === 'object' && 'code' in signalReason && typeof signalReason.code === 'string'
-          ? signalReason.code
-          : undefined
-        const cancelReason = signalCode?.startsWith('downstream_') ? signalCode : 'client_disconnected'
-        const abortError = signalReason instanceof Error ? signalReason : new Error('Client stream disconnected')
-        clearTimeout(pending.timeout)
-        pending.cleanup?.()
-        state.pendingStreams.delete(id)
-        state.inFlightRpc = state.pending.size + state.pendingStreams.size
-        if (state.socket?.readyState === 1) {
-          state.socket.send(JSON.stringify({
-            type: 'rpc_stream_cancel',
-            id,
-            reason: cancelReason
-          }))
-        }
-        logRouter('warn', 'Gateway stream cancelled by downstream', {
-          hermesAgentId,
-          requestId: id,
-          method: payload.method,
-          path: logPath(payload.path),
-          reason: cancelReason,
-          latencyMs: elapsedMs(startedAt)
-        })
-        reject(abortError)
-      }
-      const cleanup = options.signal
-        ? () => options.signal?.removeEventListener('abort', abort)
-        : undefined
-      state.pendingStreams.set(id, { resolve, reject, timeout, startedAt, onFrame: options.onFrame, cleanup })
-      options.signal?.addEventListener('abort', abort, { once: true })
-      if (options.signal?.aborted) {
-        abort()
-        return
-      }
-      state.inFlightRpc = state.pending.size + state.pendingStreams.size
+      state.pendingNative.set(id, {
+        resolve,
+        reject,
+        timeout,
+        startedAt,
+        requestType,
+        laneId,
+        ...correlation,
+      })
+      state.inFlightRpc = state.pending.size + state.pendingNative.size
       state.socket?.send(message, error => {
         if (!error) return
         clearTimeout(timeout)
-        cleanup?.()
-        state.pendingStreams.delete(id)
-        state.inFlightRpc = state.pending.size + state.pendingStreams.size
-        logRouter('warn', 'Gateway stream send failed', {
+        logRouter('warn', 'Gateway native session send became ambiguous', {
           hermesAgentId,
           requestId: id,
-          method: payload.method,
-          path: logPath(payload.path),
-          queryKeys: queryKeys(payload.path)
+          requestType,
+          laneId,
+          submissionId: correlation.submissionId,
+          promptId: correlation.promptId,
         }, error)
-        reject(error)
+        rejectAmbiguous('Gateway native session send failed ambiguously')
       })
     })
   }
@@ -712,6 +834,64 @@ export class GatewayRegistry {
       state.socket?.close(4401, 'gateway hello required')
       return
     }
+    if (parsed.type === 'session_submit_ack' && typeof parsed.id === 'string') {
+      const pending = state.pendingNative.get(parsed.id)
+      if (!pending) {
+        logRouter('warn', 'Gateway native acknowledgement ignored because request is unknown', {
+          hermesAgentId: state.hermesAgentId,
+          requestId: parsed.id,
+        })
+        return
+      }
+      state.pendingNative.delete(parsed.id)
+      state.inFlightRpc = state.pending.size + state.pendingNative.size
+      clearTimeout(pending.timeout)
+      try {
+        const acknowledgement = cleanNativeAck(parsed, pending)
+        logRouter(acknowledgement.accepted ? 'info' : 'warn', 'Gateway native acknowledgement received', {
+          hermesAgentId: state.hermesAgentId,
+          requestId: parsed.id,
+          requestType: acknowledgement.requestType,
+          laneId: acknowledgement.laneId,
+          submissionId: acknowledgement.submissionId,
+          promptId: acknowledgement.promptId,
+          sessionId: acknowledgement.sessionId,
+          code: acknowledgement.code,
+          latencyMs: elapsedMs(pending.startedAt),
+        })
+        pending.resolve(acknowledgement)
+      } catch (error) {
+        pending.reject(error instanceof Error ? error : new Error(String(error)))
+        state.socket?.close(4400, 'invalid native session acknowledgement')
+      }
+      return
+    }
+    if (parsed.type === 'session_event') {
+      try {
+        const event = cleanSessionEvent(parsed, state)
+        if (!this.sessionEventHandler?.(event)) {
+          throw new Error('Gateway session event does not match a registered lane')
+        }
+        logRouter('debug', 'Gateway native session event accepted', {
+          hermesAgentId: state.hermesAgentId,
+          gatewayId: state.gatewayId,
+          laneId: event.laneId,
+          sessionId: event.sessionId,
+          submissionId: event.submissionId,
+          eventId: event.eventId,
+          event: event.event,
+        })
+      } catch (error) {
+        logRouter('warn', 'Gateway native session event rejected', {
+          hermesAgentId: state.hermesAgentId,
+          gatewayId: state.gatewayId,
+          eventId: typeof parsed.eventId === 'string' ? parsed.eventId : undefined,
+          event: typeof parsed.event === 'string' ? parsed.event : undefined,
+        }, error)
+        state.socket?.close(4400, 'invalid native session event')
+      }
+      return
+    }
     if (parsed.type === 'rpc_response' && typeof parsed.id === 'string') {
       const pending = state.pending.get(parsed.id)
       if (!pending) {
@@ -722,7 +902,7 @@ export class GatewayRegistry {
         return
       }
       state.pending.delete(parsed.id)
-      state.inFlightRpc = state.pending.size + state.pendingStreams.size
+      state.inFlightRpc = state.pending.size + state.pendingNative.size
       clearTimeout(pending.timeout)
       try {
         const response = cleanRpcResponse(parsed)
@@ -743,79 +923,6 @@ export class GatewayRegistry {
         }, error)
         pending.reject(error instanceof Error ? error : new Error(String(error)))
       }
-      return
-    }
-    if (typeof parsed.id === 'string' && (parsed.type === 'rpc_stream_chunk' || parsed.type === 'rpc_stream_end' || parsed.type === 'rpc_stream_error')) {
-      const pending = state.pendingStreams.get(parsed.id)
-      if (!pending) {
-        if (parsed.type !== 'rpc_stream_chunk') {
-          logRouter('warn', 'Gateway stream frame ignored because request is unknown', {
-            hermesAgentId: state.hermesAgentId,
-            requestId: parsed.id,
-            frameType: parsed.type
-          })
-        }
-        return
-      }
-      let frame: RpcStreamFrame
-      try {
-        frame = cleanStreamFrame(parsed)
-      } catch (error) {
-        logRouter('warn', 'Gateway stream frame rejected', {
-          hermesAgentId: state.hermesAgentId,
-          requestId: parsed.id,
-          frameType: parsed.type
-        }, error)
-        state.pendingStreams.delete(parsed.id)
-        state.inFlightRpc = state.pending.size + state.pendingStreams.size
-        clearTimeout(pending.timeout)
-        pending.cleanup?.()
-        pending.reject(error instanceof Error ? error : new Error(String(error)))
-        return
-      }
-      if (frame.type === 'rpc_stream_chunk') {
-        pending.onFrame(frame)
-        return
-      }
-      state.pendingStreams.delete(parsed.id)
-      state.inFlightRpc = state.pending.size + state.pendingStreams.size
-      clearTimeout(pending.timeout)
-      pending.cleanup?.()
-      if (frame.type === 'rpc_stream_error') {
-        pending.onFrame(frame)
-        logRouter('warn', 'Gateway stream error received', {
-          hermesAgentId: state.hermesAgentId,
-          requestId: parsed.id,
-          error: frame.error,
-          latencyMs: elapsedMs(pending.startedAt)
-        })
-        pending.reject(new Error(frame.error))
-        return
-      }
-      const metrics: GatewayRequestMetrics = {
-        requestId: parsed.id,
-        gatewayDispatchMs: elapsedMs(pending.startedAt),
-        totalLatencyMs: elapsedMs(pending.startedAt),
-        via: 'hermes-hub-gateway',
-        ...(frame.metrics || {})
-      }
-      pending.terminalResult = {
-        response: {
-          status: frame.status,
-          headers: frame.headers || {},
-          bodyBase64: frame.bodyBase64 || '',
-          metrics
-        },
-        metrics
-      }
-      pending.resolve(pending.terminalResult)
-      pending.onFrame(frame)
-      logRouter(frame.status >= 400 ? 'warn' : 'info', 'Gateway stream completed', {
-        hermesAgentId: state.hermesAgentId,
-        requestId: parsed.id,
-        status: frame.status,
-        latencyMs: elapsedMs(pending.startedAt)
-      })
       return
     }
     if (parsed.type === 'heartbeat_ack' && typeof parsed.id === 'string') {
@@ -904,6 +1011,21 @@ export class GatewayRegistry {
           .filter((item): item is string => typeof item === 'string' && item.length > 0)
           .map(item => item.slice(0, 120))
           .slice(0, 64)
+      }
+      if (
+        state.mode !== 'native-session' ||
+        !state.capabilities?.includes('session.message') ||
+        !state.capabilities.includes('session.prompt-response')
+      ) {
+        logRouter('warn', 'Gateway native session contract rejected', {
+          gatewayId: state.gatewayId,
+          hermesAgentId: state.hermesAgentId,
+          gatewayConnectionId: state.gatewayConnectionId,
+          mode: state.mode,
+          capabilities: state.capabilities,
+        })
+        state.socket?.close(4406, 'native session gateway required')
+        return
       }
       if (state.helloTimeout) clearTimeout(state.helloTimeout)
       state.helloTimeout = undefined

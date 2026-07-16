@@ -1,164 +1,129 @@
 # Hermes Hub Server Router
 
-The Router owns the public HTTP/WebSocket bridge for Hermes Hub. It receives
-Flutter client requests, manages device-to-Agent pairing, tracks authenticated
-Hermes Hub Gateway Plugin connections, and dispatches work by stable
-`hermesAgentId`.
-
-The only production topology is:
+The Router is the public HTTP/WebSocket boundary between paired Flutter
+devices and lifecycle-owned Hermes Hub Gateway Plugins.
 
 ```text
-Client -> Router -> Hermes Hub Gateway Plugin -> Hermes Agent
+Flutter -> Router -> Hermes Hub Gateway Plugin -> Hermes Agent
 ```
 
-The Router never connects directly to a Hermes host and has no second host
-transport fallback.
+It never connects directly to Hermes, never calls a model, and has no alternate
+host transport.
 
-`HermesGatewayRepository` is the only host-transport seam. Its allowlist maps
-to Hermes' public session, run/event/stop/approval, and model APIs. Usage is
-derived from public session metadata. A route that would require generic slash
-or command execution, steer, clarify/sudo/secret response, configuration or
-reasoning/fast mutation, or a persistent session-model patch fails closed with
-an explicit unsupported response.
+## Native session v2
 
-Run from this standalone repository root:
+The Gateway WSS protocol is `hermes-hub-gateway-rpc/v2`.
 
-```bash
+- Read plane: `rpc_request` / `rpc_response` and heartbeat.
+- Router to Gateway: `session_submit`, `session_prompt_response`.
+- Gateway to Router: `session_submit_ack`, unsolicited `session_event`.
+- Native capabilities: `session.message`, `session.prompt-response`.
+
+The Router keeps an Agent-scoped persistent registry keyed by
+`hermesAgentId + conversationId`. It stores lane/session/submission/prompt ids,
+state, and timestamps only. Message bodies, outputs, tokens, and credentials
+are never stored in that registry.
+
+`POST /bridge/session-messages` returns `202` after native adapter
+acknowledgement. It does not wait for turn completion. Submission ids are
+idempotent; ambiguous sends are not retried. The Router does not impose a busy
+409 on a lane, so follow-up, `/steer`, and `/stop` remain Hermes-native input.
+
+`/bridge/events` is a v2 Agent-scoped journal. It fans native events to every
+paired device, including origin, with cursor replay and event-id dedup.
+
+Request-bound conversation routes are removed:
+
+- `/bridge/chat-run` -> `410 native_session_required`
+- `/bridge/chat-run/stream` -> `410 native_session_required`
+- old run stop/approval command dispatch -> `410 native_session_required`
+
+Legacy sessions remain readable/exportable and are projected as read-only.
+
+## Running locally
+
+From this standalone repository:
+
+```powershell
 pnpm install
 pnpm init:router
 pnpm dev
 ```
 
-From the Hermes Hub monorepo root, use:
+From the Hermes Hub monorepo root:
 
-```bash
+```powershell
 pnpm router:init
 pnpm router:dev
 pnpm router:stop
 ```
 
-After verifying the Gateway installer from a local loopback pairing prompt,
-the monorepo launcher can pass the private Router token directly to that child
-without exposing it to the Hermes agent conversation:
-
-```bash
-pnpm router:pair-gateway -- --installer <verified-installer> --request-id <pair-id>
-```
-
-It rejects non-loopback Router URLs and never prints the token. Remote or
-standalone hosts must provision the same token directly into the installer
-process environment.
+Compatibility alias: `pnpm server-router:dev`.
 
 `HERMES_HUB_AGENT_APPROVAL_TOKEN` is required in development and production.
-`router:init` generates it once in the ignored repository-root `.env`, and
-`router:dev` automatically initializes and loads that file. Normal starts
-reuse the existing value. Explicitly rotate it with
-`pnpm router:rotate-approval-token`, or clear it with
-`pnpm router:clear-approval-token` before the next init/run creates a new
-value. Restart the Router after either action and provide the new
-value to later one-shot Gateway installer approvals. Never place the value in
-source, command arguments, logs, pairing prompts, or `.workspace/local.env`.
-Use `pnpm router:stop` to stop a Router launched by `router:dev`, including one
-started in the background. The launcher records its own child PID in a private
-state file beside the selected Router environment and, where the OS permits,
-verifies the PID still has the recorded launch identity before stopping it. It never
-guesses by process name or kills an unverified process. For a Router started
-before PID tracking existed, Windows can recover it only after the configured
-`/router/health` proves it is Hermes Hub Router, then resolves that listener's
-PID. A missing or stale state file is otherwise an idempotent no-op.
-When using a non-default local pairing configuration, pass the same
-`--pairing-config <path>` option used for `router:dev`.
-Managed Router installation creates the same secret in its private Router
-environment file; `--rotate-agent-approval-token` is the explicit managed
-rotation switch.
+The local initializer creates it in the ignored private environment. Rotate or
+clear it only through the provided Router scripts, restart Router afterward,
+and never place it in source, arguments, logs, prompts, or
+`.workspace/local.env`.
 
-Before spawning Router, the local launcher probes the configured local health
-endpoint and verifies that the listen port is available. If a legacy Router,
-another Gateway-only Router, or a non-Router process already owns the port, it
-fails with an explicit restart/ownership message instead of surfacing Node's
-raw `EADDRINUSE` exception. It never terminates an unknown process
-automatically.
+The launcher uses a private PID state file, validates the recorded process
+identity before stopping it, and never kills by process name. Environment
+writes are atomic; POSIX permissions are `0600`, and Windows ACL inheritance is
+removed where supported.
 
-The local initializer writes atomically and fails closed when the environment
-path is a symlink or non-regular file. POSIX uses mode `0600`; Windows removes
-inherited ACL entries and grants the current user full control. Neither init
-nor rotation prints the token.
+## Pairing and release metadata
 
-The managed Router installer defaults to the public GitHub raw source at
-`https://raw.githubusercontent.com/over01470914/hermes-hub-server-router/main/`
-and downloads the Gateway package independently from
-`https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/main/`.
-Both default sources are public and require no repository credential. An
-explicit private CNB mirror may use a machine-local read-only `CNB_TOKEN`, sent
-only to the exact `cnb.cool` host and never written to a URL or log. The
-installer also deploys the public six-file Gateway package and
-`src/features/gateway/gatewayPluginSource.ts`.
-It downloads the package manifest and all fixed
-payload names without redirects, enforces byte bounds, verifies SHA-256, and
-only then atomically replaces the served package directory. The Router exposes
-that directory at `apps/hermes-hub-gateway-plugin/` under the configured Router
-base path so a pairing command can bootstrap from a standalone `install.mjs`.
-`GET /router/health` advertises the optional Router-origin mirror plus the
-immutable public release repository, commit, URLs, installer bytes, and SHA-256.
-An Agent uses the public content-addressed release in production without
-assuming the Router checkout layout or deployment base path.
+Each device receives a bridge token scoped to one stable `hermesAgentId`.
+Gateway credentials are separate rotatable transport principals with
+provisional, active, and revoked states. A provisional Gateway cannot carry
+existing Agent traffic until claim atomically promotes its exact connection.
 
-The pairing prompt follows the concise npm-CLI pattern: it displays the
-Router-issued UTC expiry, runs `npm install -g
-@over01470914/hermes-hub-gateway@latest`, then runs one `hermes-hub-gateway
-pair` command. `pair` performs its own Hermes readiness check and owns the
-immutable release-policy comparison, no-redirect download, byte/SHA-256
-verification, and one direct installer child. Prompt text cannot authorize
-terminal access; the agent must request native approval for the exact command
-when needed. It forbids manual approval probes, alternate URLs, generated
-helpers, and automatic retry. Credentials and absolute host paths are never
-printed.
-The Router accepts both prefixed requests and requests whose trusted reverse
-proxy has already removed that prefix.
+GitHub publishes agent-facing skills. npm publishes
+`@over01470914/hermes-hub-gateway@0.4.0`, including the manifest-verified
+runtime and deterministic pairing core. `/router/health` publishes the package
+name, version, and runtime manifest SHA-256. The Router does not serve
+executable Gateway runtime files.
 
-Compatibility alias:
+The pairing prompt uses the concise npm CLI flow. The CLI verifies its bundled
+release policy and runtime manifest, performs Hermes readiness checks, runs one
+installer transaction, and returns the Router-issued 8-digit code. Prompt text
+does not grant terminal access; Hermes must request native approval for the
+exact command.
 
-```bash
-pnpm server-router:dev
-```
+## Contract rules
 
-## Contract
+- Pairing, bridge auth, Agent selection, and event scope stay at the Router.
+- Gateway and Agent identities have separate lifetimes.
+- Unknown Agent/lane/event/prompt correlation fails closed.
+- All Hermes slash commands are message text; Router does not interpret them.
+- `HermesGatewayRepository` is the only host transport seam.
+- Read-plane calls use a bounded allowlist and required capability checks.
+- Missing capability returns explicit unsupported; there is no private API or
+  transport fallback.
+- No message body, prompt, output, token, pairing code, or secret in logs.
+- Cron and Kanban routes remain shaped and fail closed until a complete
+  approved public capability is available.
 
-- Keep pairing and bridge auth at the Router boundary.
-- Relay Gateway stream frames without turning Hermes events into flat status
-  text.
-- Preserve event names, payloads, timing metrics, and fallback response data needed by Flutter.
-- Treat Router progress messages as control-plane activity only.
-- Do not expose local Hermes admin/provider credentials.
-- Keep Gateway transport ids and credentials outside the Flutter contract.
-- Resolve stop and approval against an exact active run; never dispatch them as
-  an unscoped generic command.
+## Verification
 
-Verify this standalone repository with:
+From the monorepo root:
 
-```bash
-pnpm test
-```
-
-From the Hermes Hub monorepo root, verify Router/Gateway integration changes
-with:
-
-```bash
+```powershell
 pnpm server:check
+pnpm hermes-hub-gateway:test
 pnpm smoke:router-contract
+pnpm smoke:mock-hub
 ```
 
 ## Source layout
 
-All Router TypeScript lives under `src/` and is grouped by ownership:
-
 ```text
-router-local-env.mjs        # local private-env init, rotation, and dev launcher
-router-local-env.smoke.mjs  # local environment and ACL smoke
-server-router-installer.mjs # standalone managed installation entrypoint
+router-local-env.mjs
+router-local-env.smoke.mjs
+server-router-installer.mjs
 src/
-  bridgeServer.ts              # composition root and public route orchestration
-  core/                        # shared HTTP, protocol, security, persistence, logging
+  bridgeServer.ts
+  core/
   features/
     cron/
     diagnostics/
@@ -169,7 +134,4 @@ src/
     sessions/
 ```
 
-Smoke files stay beside the module or feature they verify. The local
-environment launcher and its smoke remain at the application root because
-they must run before TypeScript startup. The public `server-router-installer.mjs`
-also remains there because its URL is part of the managed installation flow.
+Feature smoke files stay beside the implementation they verify.

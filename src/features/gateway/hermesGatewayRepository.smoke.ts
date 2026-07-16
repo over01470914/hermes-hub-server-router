@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict'
 
-import type { RpcStreamRequest } from '../../core/protocol/bridgeProtocol.js'
 import type {
   GatewayHeartbeatResult,
   GatewayRpcRequest,
   GatewayRpcResponse,
   GatewayState,
-  GatewayStreamResult,
 } from './gatewayRegistry.js'
 import { GatewayRegistry } from './gatewayRegistry.js'
 import { HermesGatewayRepository } from './hermesGatewayRepository.js'
@@ -26,15 +24,14 @@ function state(capabilities: string[] = []): GatewayState {
     online: true,
     inFlightRpc: 0,
     runtime: 'hermes-hub-gateway',
-    mode: 'api-server',
-    protocols: ['hermes-hub-gateway-rpc/v1'],
+    mode: 'native-session',
+    protocols: ['hermes-hub-gateway-rpc/v2'],
     capabilities,
   }
 }
 
 class FakeRegistry {
   requestCalls = 0
-  streamCalls = 0
   heartbeatCalls = 0
   response: GatewayRpcResponse = { status: 200, headers: {}, bodyBase64: '' }
 
@@ -51,19 +48,6 @@ class FakeRegistry {
   async requestByAgentId(_id: string, _payload: GatewayRpcRequest): Promise<GatewayRpcResponse> {
     this.requestCalls += 1
     return this.response
-  }
-
-  async streamRequestByAgentId(): Promise<GatewayStreamResult> {
-    this.streamCalls += 1
-    return {
-      response: this.response,
-      metrics: {
-        requestId: 'stream_smoke',
-        gatewayDispatchMs: 1,
-        totalLatencyMs: 1,
-        via: 'hermes-hub-gateway',
-      },
-    }
   }
 
   async heartbeatByAgentId(): Promise<GatewayHeartbeatResult> {
@@ -85,36 +69,15 @@ function rpc(method: string, params: Record<string, unknown> = {}): GatewayRpcRe
 }
 
 {
-  const gateway = new FakeRegistry(state(['sessions', 'chat.stream', 'run.stop']))
+  const gateway = new FakeRegistry(state(['sessions', 'session.message', 'session.prompt-response']))
   const connections = repository(gateway)
 
   await connections.request(hermesAgentId, { method: 'GET', path: '/api/sessions' })
   assert.equal(gateway.requestCalls, 1)
-  await connections.request(hermesAgentId, rpc('session.interrupt'))
-  assert.equal(gateway.requestCalls, 2)
   await assert.rejects(
-    connections.request(hermesAgentId, rpc('session.steer')),
+    connections.request(hermesAgentId, rpc('session.interrupt')),
     /does not expose this operation/,
   )
-}
-
-{
-  const gateway = new FakeRegistry(state(['chat.stream']))
-  const connections = repository(gateway)
-  const streamPayload: Omit<RpcStreamRequest, 'type' | 'id'> = {
-    method: 'POST',
-    path: '/api/chat-run/runs',
-    headers: {},
-    bodyBase64: '',
-  }
-
-  const result = await connections.streamRequest(
-    hermesAgentId,
-    streamPayload,
-    { onFrame: () => undefined },
-  )
-  assert.equal(result.kind, 'hermes-hub-gateway')
-  assert.equal(gateway.streamCalls, 1)
 }
 
 {

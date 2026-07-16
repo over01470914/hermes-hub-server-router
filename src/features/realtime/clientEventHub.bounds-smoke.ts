@@ -38,14 +38,11 @@ function assert(condition: unknown, message: string): asserts condition {
 function publish(hub: ClientEventHub, scope: string, value: string): void {
   hub.publish({
     scope,
+    conversationId: `conversation-${scope}`,
     sessionId: `session-${scope}`,
-    streamId: `stream-${scope}`,
-    frame: {
-      type: 'rpc_stream_chunk',
-      id: `stream-${scope}`,
-      event: 'message.delta',
-      data: { delta: value }
-    }
+    submissionId: `submission-${scope}`,
+    event: 'message.updated',
+    data: { content: value },
   })
 }
 
@@ -113,6 +110,37 @@ publish(slowHub, 'slow-scope', 'x'.repeat(1024))
 assert(slowSocket.closeCode === 1013, 'slow subscriber was not closed with code 1013')
 slowHub.reset()
 
+const originHub = new ClientEventHub({ heartbeatIntervalMs: 60_000 })
+const originSocket = new FakeSocket()
+const peerSocket = new FakeSocket()
+originHub.attach(originSocket.asWebSocket(), { scope: 'origin-scope', clientId: 'origin' })
+originHub.attach(peerSocket.asWebSocket(), { scope: 'origin-scope', clientId: 'peer' })
+const first = originHub.publish({
+  scope: 'origin-scope',
+  conversationId: 'conv_origin',
+  eventId: 'evt_origin_dedup',
+  event: 'message.created',
+  data: { role: 'assistant', content: 'shared' },
+  originClientId: 'origin',
+})
+const duplicate = originHub.publish({
+  scope: 'origin-scope',
+  conversationId: 'conv_origin',
+  eventId: 'evt_origin_dedup',
+  event: 'message.created',
+  data: { role: 'assistant', content: 'shared' },
+})
+assert(first.cursor === duplicate.cursor, 'Gateway event id was not deduplicated')
+assert(
+  originSocket.sent.some(message => (message as { event_id?: string }).event_id === 'evt_origin_dedup'),
+  'origin client did not receive its native session event',
+)
+assert(
+  peerSocket.sent.some(message => (message as { event_id?: string }).event_id === 'evt_origin_dedup'),
+  'peer client did not receive the native session event',
+)
+originHub.reset()
+
 const tailBuffer = new PendingRealtimeFrameBuffer(3, 64 * 1024)
 for (let index = 1; index <= 5; index += 1) {
   tailBuffer.push({
@@ -154,6 +182,7 @@ console.log(JSON.stringify({
     idleScopeEvictionRequiresResync: evictedScopeAttach.resyncRequired,
     activeScopeReplayRetained: activeReplayAttach.replayed,
     slowSubscriberCloseCode: slowSocket.closeCode,
+    originAndPeerReceivedTypedEvent: true,
     pendingTailFrames: tailFrames.length,
     pendingTerminalRetained: terminalFrames[0]?.type === 'rpc_stream_end'
   }

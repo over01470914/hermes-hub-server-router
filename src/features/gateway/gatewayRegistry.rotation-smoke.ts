@@ -30,9 +30,9 @@ class FakeGatewaySocket extends EventEmitter {
       gatewayId,
       hermesAgentId,
       runtime: 'hermes-hub-gateway',
-      mode: 'api-server',
-      protocols: ['hermes-hub-gateway-rpc/v1'],
-      capabilities: ['sessions', 'chat.stream'],
+      mode: 'native-session',
+      protocols: ['hermes-hub-gateway-rpc/v2'],
+      capabilities: ['sessions', 'session.message', 'session.prompt-response'],
     })))
   }
 }

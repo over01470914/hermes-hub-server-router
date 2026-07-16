@@ -6,6 +6,7 @@ export interface RouterStatePaths {
   diagnosticsDir: string
   pairingStorePath: string
   sessionMetadataStorePath: string
+  nativeConversationStorePath: string
 }
 
 /**
@@ -25,5 +26,6 @@ export function resolveRouterStatePaths(
     diagnosticsDir: environment.HERMES_HUB_DIAGNOSTICS_DIR || join(routerRoot, 'diagnostics'),
     pairingStorePath: environment.HERMES_HUB_PAIRING_STORE_PATH || join(privateStateDir, 'pairing-store.json'),
     sessionMetadataStorePath: environment.HERMES_HUB_SESSION_METADATA_STORE_PATH || join(privateStateDir, 'session-metadata.json'),
+    nativeConversationStorePath: environment.HERMES_HUB_NATIVE_CONVERSATION_STORE_PATH || join(privateStateDir, 'native-conversations.json'),
   }
 }

@@ -138,9 +138,9 @@ async function connectGateway(
     gatewayId,
     hermesAgentId,
     runtime: 'hermes-hub-gateway',
-    mode: 'api-server',
-    protocols: ['hermes-hub-gateway-rpc/v1'],
-    capabilities: ['health', 'sessions'],
+    mode: 'native-session',
+    protocols: ['hermes-hub-gateway-rpc/v2'],
+    capabilities: ['health', 'sessions', 'session.message', 'session.prompt-response'],
   }))
   return { socket, helloAck: await helloAck }
 }

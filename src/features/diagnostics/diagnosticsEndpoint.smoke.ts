@@ -272,9 +272,9 @@ try {
     gatewayId,
     hermesAgentId,
     runtime: 'diagnostics-stream-smoke',
-    mode: 'api-server',
-    protocols: ['hermes-hub-gateway-rpc/v1'],
-    capabilities: ['chat.stream'],
+    mode: 'native-session',
+    protocols: ['hermes-hub-gateway-rpc/v2'],
+    capabilities: ['session.message', 'session.prompt-response'],
   }))
   await helloAck
 

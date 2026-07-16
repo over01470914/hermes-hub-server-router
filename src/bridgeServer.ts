@@ -25,6 +25,8 @@ import { InMemoryPairingStore, PAIRING_RECORD_SCHEMA_VERSION, type PairingClaim,
 import { ClientEventHub } from './features/realtime/clientEventHub.js'
 import { PendingRealtimeFrameBuffer } from './features/realtime/pendingRealtimeFrames.js'
 import { SessionMetadataStore } from './features/sessions/sessionMetadataStore.js'
+import { NativeConversationStore } from './features/sessions/nativeConversationStore.js'
+import { projectNativeSessionListPayload } from './features/sessions/nativeSessionProjection.js'
 import {
   KanbanBridgeRequestError,
   normalizeKanbanBridgeError,
@@ -44,7 +46,12 @@ const port = Number(process.env.HERMES_HUB_ROUTER_PORT || 4320)
 const host = process.env.HERMES_HUB_ROUTER_HOST || '0.0.0.0'
 const routerUrl = (process.env.HERMES_HUB_ROUTER_URL || `http://127.0.0.1:${port}`).replace(/\/$/, '')
 const configuredRouterBasePath = routerBasePath(routerUrl)
-const { diagnosticsDir, pairingStorePath, sessionMetadataStorePath } = resolveRouterStatePaths(import.meta.url)
+const {
+  diagnosticsDir,
+  pairingStorePath,
+  sessionMetadataStorePath,
+  nativeConversationStorePath,
+} = resolveRouterStatePaths(import.meta.url)
 const agentApprovalToken = process.env.HERMES_HUB_AGENT_APPROVAL_TOKEN || ''
 if (agentApprovalToken.length < 32) {
   throw new Error('HERMES_HUB_AGENT_APPROVAL_TOKEN must be configured with at least 32 characters')
@@ -154,6 +161,42 @@ const gatewayRegistry = new GatewayRegistry()
 const hermesGateways = new HermesGatewayRepository(gatewayRegistry)
 const clientEventHub = new ClientEventHub()
 const sessionMetadataStore = new SessionMetadataStore(sessionMetadataStorePath)
+const nativeConversationStore = new NativeConversationStore(nativeConversationStorePath)
+
+gatewayRegistry.setSessionEventHandler(event => {
+  const conversation = nativeConversationStore.acceptSessionEvent(
+    event.hermesAgentId,
+    event.laneId,
+    event.sessionId,
+  )
+  if (!conversation) return false
+  if (event.submissionId) {
+    const submission = nativeConversationStore.getSubmission(event.hermesAgentId, event.submissionId)
+    if (!submission || submission.laneId !== event.laneId) return false
+  }
+  if (event.event === 'prompt.requested') {
+    const promptId = typeof event.data.promptId === 'string' ? event.data.promptId : ''
+    if (!nativeConversationStore.registerPrompt(
+      event.hermesAgentId,
+      event.laneId,
+      promptId,
+      event.sessionId,
+    )) return false
+  } else if (event.event === 'prompt.resolved') {
+    const promptId = typeof event.data.promptId === 'string' ? event.data.promptId : ''
+    if (promptId) nativeConversationStore.resolvePrompt(event.hermesAgentId, promptId)
+  }
+  clientEventHub.publish({
+    scope: `hermes-agent:${event.hermesAgentId}`,
+    eventId: event.eventId,
+    conversationId: conversation.conversationId,
+    sessionId: event.sessionId || conversation.sessionId,
+    submissionId: event.submissionId,
+    event: event.event,
+    data: event.data,
+  })
+  return true
+})
 
 type ProxiedHermesResponse = Awaited<ReturnType<typeof proxyViaGateway>>
 
@@ -427,6 +470,14 @@ function applySessionMetadataToBody(hermesAgentId: string, body: Buffer): Buffer
   return Buffer.from(JSON.stringify(sessionMetadataStore.applyToPayload(hermesAgentId, payload)), 'utf8')
 }
 
+function projectSessionList(hermesAgentId: string, body: Buffer): Buffer {
+  const payload = parseJsonBuffer(body)
+  if (!payload) return body
+  return Buffer.from(JSON.stringify(
+    projectNativeSessionListPayload(payload, nativeConversationStore.list(hermesAgentId)),
+  ), 'utf8')
+}
+
 function sendGatewaySessionResponse(
   response: ServerResponse,
   rpc: GatewayRpcResponse,
@@ -437,6 +488,44 @@ function sendGatewaySessionResponse(
     Buffer.from(rpc.bodyBase64 || '', 'base64'),
   )
   sendBuffer(response, rpc.status, jsonHeaders(rpc.headers), body)
+}
+
+function sendGatewaySessionListResponse(
+  response: ServerResponse,
+  rpc: GatewayRpcResponse,
+  hermesAgentId: string,
+): void {
+  const withMetadata = applySessionMetadataToBody(
+    hermesAgentId,
+    Buffer.from(rpc.bodyBase64 || '', 'base64'),
+  )
+  sendBuffer(response, rpc.status, jsonHeaders(rpc.headers), projectSessionList(hermesAgentId, withMetadata))
+}
+
+function sessionReadTarget(hermesAgentId: string, clientSessionId: string): string {
+  const conversation = nativeConversationStore.getByConversationId(hermesAgentId, clientSessionId)
+  if (!conversation) return clientSessionId
+  if (!conversation.sessionId) {
+    throw Object.assign(new Error('Native conversation has no Hermes session yet'), {
+      code: 'native_session_pending',
+      statusCode: 409,
+    })
+  }
+  return conversation.sessionId
+}
+
+function sendNativeSessionRequired(response: ServerResponse): void {
+  sendJson(response, 410, {
+    error: 'This request-bound chat route has been removed; use /bridge/session-messages',
+    code: 'native_session_required',
+  })
+}
+
+function sendSessionMutationRejected(response: ServerResponse, code = 'session_read_only'): void {
+  sendJson(response, 409, {
+    error: 'Session mutation is unavailable after the native Gateway session cutover',
+    code,
+  })
 }
 
 function sessionIdFromBody(body: Buffer): string | undefined {
@@ -1059,7 +1148,7 @@ async function handleBridgeRawSession(
   rawSessionId: string
 ): Promise<void> {
   const decodedSessionId = decodeURIComponent(rawSessionId)
-  const sessionId = encodeURIComponent(decodedSessionId)
+  const sessionId = encodeURIComponent(sessionReadTarget(payload.hermesAgentId, decodedSessionId))
   const startedAt = Date.now()
   logRouter('info', 'Bridge raw session export requested', {
     sessionId: decodedSessionId,
@@ -1306,7 +1395,13 @@ async function handleBridgeBootstrap(request: IncomingMessage, response: ServerR
     hermesAgentId: selectedHermesAgentId(payload)
   })
   const sessions = await proxyViaGateway(payload, `api/sessions?limit=${encodeURIComponent(String(query.limit))}`, { sourceHeaders: request.headers })
-  const sessionsJson = jsonPayloadFromProxied(sessions)
+  const sessionsJson = parseJsonBuffer(projectSessionList(
+    payload.hermesAgentId,
+    applySessionMetadataToBody(
+      payload.hermesAgentId,
+      Buffer.from(sessions.response.bodyBase64 || '', 'base64'),
+    ),
+  ))
   logRouter(statusLevel(proxiedStatus(sessions)), 'Bridge sessions received for bootstrap', {
     ...proxiedLogContext(sessions, bootstrapRequestId, bootstrapStartedAt),
     hasSessionsPayload: Boolean(sessionsJson)
@@ -1314,7 +1409,7 @@ async function handleBridgeBootstrap(request: IncomingMessage, response: ServerR
   let messagesJson: unknown = null
   let messagesStatus: number | undefined
   if (query.activeSessionId) {
-    const sessionId = encodeURIComponent(query.activeSessionId)
+    const sessionId = encodeURIComponent(sessionReadTarget(payload.hermesAgentId, query.activeSessionId))
     const messages = await proxyViaGateway(payload, `api/sessions/${sessionId}/messages`, { sourceHeaders: request.headers })
     messagesStatus = proxiedStatus(messages)
     messagesJson = jsonPayloadFromProxied(messages)
@@ -1363,274 +1458,207 @@ async function handleBridgeBootstrap(request: IncomingMessage, response: ServerR
   })
 }
 
-async function handleChatRunStream(request: IncomingMessage, response: ServerResponse, payload: BridgeTokenPayload): Promise<void> {
-  const rawBody = await readBody(request)
-  const body = chatRunStreamBody(rawBody)
-  const streamStartedAt = Date.now()
-  const streamRequestId = requestId('stream')
-  const chatRunTimeoutMs = chatRunProxyTimeoutMs(body)
-  const upstreamTimeoutMs = chatRunUpstreamTimeoutMs(body)
-  const hermesAgentId = selectedHermesAgentId(payload)
-  const originClientId = bridgeClientId(request)
-  const eventScope = bridgeClientEventScope(payload)
-  let liveSessionId = chatRunSessionId(body)
-  const pendingRealtimeFrames = new PendingRealtimeFrameBuffer(
-    maxPendingRealtimeFrames,
-    maxPendingRealtimeBytes
+function publishConversationResync(
+  hermesAgentId: string,
+  conversationId: string,
+  sessionId: string | undefined,
+  submissionId: string | undefined,
+  reason: string,
+): void {
+  clientEventHub.publish({
+    scope: `hermes-agent:${hermesAgentId}`,
+    conversationId,
+    sessionId,
+    submissionId,
+    event: 'session.resync_required',
+    data: { reason },
+  })
+}
+
+async function handleNativeSessionMessage(
+  request: IncomingMessage,
+  response: ServerResponse,
+  payload: BridgeTokenPayload,
+): Promise<void> {
+  requireGatewayBoundBridge(payload)
+  const input = await readJson(request)
+  const submissionId = typeof input.submissionId === 'string' ? input.submissionId.trim() : ''
+  const conversationId = typeof input.conversationId === 'string' && input.conversationId.trim()
+    ? input.conversationId.trim()
+    : undefined
+  const text = typeof input.text === 'string' ? input.text : ''
+  if (!/^sub_[A-Za-z0-9._:-]{8,191}$/.test(submissionId)) {
+    throw Object.assign(new Error('submissionId is invalid'), { code: 'validation_error', statusCode: 400 })
+  }
+  if (!text.trim()) {
+    throw Object.assign(new Error('text is required'), { code: 'validation_error', statusCode: 400 })
+  }
+  if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) {
+    throw Object.assign(new Error('Session message is too large'), { code: 'body_too_large', statusCode: 413 })
+  }
+
+  const begun = nativeConversationStore.beginSubmission(
+    payload.hermesAgentId,
+    submissionId,
+    conversationId,
   )
-  let pendingRealtimeOverflowLogged = false
-  const publishRealtimeFrame = (frame: RpcStreamFrame): void => {
-    liveSessionId = frameSessionId(frame) || liveSessionId
-    if (!liveSessionId) {
-      const stats = pendingRealtimeFrames.push(frame)
-      if (stats.droppedFrames > 0 && !pendingRealtimeOverflowLogged) {
-        pendingRealtimeOverflowLogged = true
-        logRouter('warn', 'Fresh-session realtime pending buffer trimmed', {
-          requestId: streamRequestId,
-          hermesAgentId,
-          retainedFrames: stats.retainedFrames,
-          retainedBytes: stats.retainedBytes,
-          droppedFrames: stats.droppedFrames,
-          droppedBytes: stats.droppedBytes,
-          maxFrames: maxPendingRealtimeFrames,
-          maxBytes: maxPendingRealtimeBytes,
-          hasTerminal: stats.hasTerminal
-        })
-      }
+  if (begun.duplicate) {
+    if (begun.submission.state === 'accepted' && begun.submission.sessionId) {
+      sendJson(response, 202, {
+        accepted: true,
+        submissionId,
+        conversationId: begun.conversation.conversationId,
+        sessionId: begun.submission.sessionId,
+        idempotent: true,
+      })
       return
     }
-    const pendingStats = pendingRealtimeFrames.stats
-    const pending = pendingRealtimeFrames.drain()
-    if (pendingStats.droppedFrames > 0) {
-      logRouter('warn', 'Fresh-session realtime pending buffer flushed after trim', {
-        requestId: streamRequestId,
-        hermesAgentId,
-        sessionId: liveSessionId,
-        retainedFrames: pending.length,
-        droppedFrames: pendingStats.droppedFrames,
-        droppedBytes: pendingStats.droppedBytes,
-        hasTerminal: pendingStats.hasTerminal
-      })
-    }
-    for (const pendingFrame of pending) {
-      clientEventHub.publish({
-        scope: eventScope,
-        sessionId: liveSessionId,
-        streamId: pendingFrame.id || streamRequestId,
-        frame: pendingFrame,
-        originClientId
-      })
-    }
-    clientEventHub.publish({
-      scope: eventScope,
-      sessionId: liveSessionId,
-      streamId: frame.id || streamRequestId,
-      frame,
-      originClientId
+    publishConversationResync(
+      payload.hermesAgentId,
+      begun.conversation.conversationId,
+      begun.conversation.sessionId,
+      submissionId,
+      `submission_${begun.submission.state}`,
+    )
+    throw Object.assign(new Error('Native submission outcome is ambiguous and will not be resent'), {
+      code: 'submission_ambiguous',
+      statusCode: 409,
     })
   }
-  const downstreamController = new AbortController()
-  let upstreamTerminalErrorForwarded = false
-  const downstreamWriter = new BoundedSseWriter(response, {
-    maxQueuedItems: maxDownstreamSseQueueItems,
-    maxQueuedBytes: maxDownstreamSseQueueBytes,
-    drainTimeoutMs: downstreamSseDrainTimeoutMs,
-    onFailure: (error, stats) => {
-      logRouter('warn', 'Chat stream downstream backpressure failed', {
-        requestId: streamRequestId,
-        hermesAgentId,
-        code: error.code,
-        queuedItems: stats.queuedItems,
-        queuedBytes: stats.queuedBytes,
-        blocked: stats.blocked,
-      })
-      if (!downstreamController.signal.aborted) downstreamController.abort(error)
-      if (!response.destroyed) response.destroy()
-    },
-  })
-  const sendFrame: ChatStreamFrameSender = (frame, id) => {
-    const accepted = downstreamWriter.write(encodeSseEvent('frame', frame, id || frame.id))
-    if (accepted) publishRealtimeFrame(frame)
-    return accepted
-  }
-  const sendMetrics = (metrics: GatewayRequestMetrics): boolean => downstreamWriter.write(
-    encodeSseEvent('metrics', { type: 'metrics', metrics }, metrics.requestId),
-  )
-  logRouter('info', 'Chat stream request received', {
-    requestId: streamRequestId,
-    hermesAgentId,
-    bodyBytes: body.length,
-    requestedEvents: true,
-    timeoutMs: chatRunTimeoutMs,
-    upstreamTimeoutMs
-  })
-  response.writeHead(200, sseHeaders())
-  sendFrame({
-    type: 'rpc_stream_chunk',
-    id: streamRequestId,
-    event: 'start',
-    sentAt: Date.now(),
-    metrics: { requestId: streamRequestId, routerQueuedMs: 0 }
-  }, streamRequestId)
-  const abortDownstream = () => {
-    if (!response.writableEnded && !downstreamController.signal.aborted) {
-      downstreamController.abort(new Error('Client stream disconnected'))
-    }
-  }
-  request.once('aborted', abortDownstream)
-  response.once('close', abortDownstream)
-  const keepAlive = setInterval(() => {
-    const downstreamStats = downstreamWriter.stats
-    if (!response.destroyed && !response.writableEnded && !downstreamStats.blocked && downstreamStats.queuedItems === 0) {
-      downstreamWriter.write(': keep-alive\n\n')
-    }
-  }, chatRunSseKeepAliveMs)
-  keepAlive.unref?.()
+
   try {
-    requireGatewayBoundBridge(payload)
-    {
-      const dispatchStartedAt = Date.now()
-      let forwardedContentFrames = 0
-      let firstForwardedFrameMs: number | undefined
-      let firstContentFrameMs: number | undefined
-      const terminalFrameRef: { frame?: Extract<RpcStreamFrame, { type: 'rpc_stream_end' }> } = {}
-      logRouter('info', 'Chat stream dispatching to Gateway', {
-        requestId: streamRequestId,
-        hermesAgentId,
-        timeoutMs: chatRunTimeoutMs,
-        upstreamTimeoutMs
+    const acknowledgement = await gatewayRegistry.submitSessionByAgentId(
+      payload.hermesAgentId,
+      {
+        laneId: begun.conversation.laneId,
+        submissionId,
+        text,
+        deviceId: payload.deviceId,
+      },
+      10_000,
+    )
+    if (!acknowledgement.accepted || !acknowledgement.sessionId) {
+      const code = acknowledgement.code || 'native_submission_rejected'
+      nativeConversationStore.updateSubmission(payload.hermesAgentId, submissionId, 'failed', { errorCode: code })
+      throw Object.assign(new Error(acknowledgement.error || 'Gateway rejected native session submission'), {
+        code,
+        statusCode: code === 'submission_conflict' ? 409 : 502,
       })
-      const connection = await hermesGateways.streamRequest(hermesAgentId, {
-        method: 'POST',
-        path: '/api/chat-run/runs',
-        headers: { 'content-type': 'application/json', accept: 'text/event-stream, application/json' },
-        bodyBase64: body.toString('base64')
-      }, {
-        onFrame: frame => {
-          firstForwardedFrameMs ??= elapsedMs(streamStartedAt)
-          if (frame.type === 'rpc_stream_error') {
-            logRouter('warn', 'Chat stream Gateway error frame received', {
-              requestId: streamRequestId,
-              hermesAgentId,
-              upstreamRequestId: frame.id,
-              error: frame.error
-            })
-          }
-          if (frame.type === 'rpc_stream_chunk' && isChatRunContentFrame(frame)) {
-            forwardedContentFrames += 1
-            firstContentFrameMs ??= elapsedMs(streamStartedAt)
-          }
-          if (frame.type === 'rpc_stream_end') {
-            terminalFrameRef.frame = frame
-            return
-          }
-          const accepted = sendFrame(frame)
-          if (frame.type === 'rpc_stream_error' && accepted) upstreamTerminalErrorForwarded = true
-        },
-        signal: downstreamController.signal,
-        upstreamTimeoutMs
-      }, chatRunTimeoutMs)
-      const result = connection.result
-      const finalBody = Buffer.from(result.response.bodyBase64 || '', 'base64')
-      if (result.response.status >= 200 && result.response.status < 300) {
-        maybePersistChatRunMetadata(hermesAgentId, body, finalBody)
-      }
-      let metrics: GatewayRequestMetrics = {
-        ...result.metrics,
-        requestId: result.metrics.requestId || streamRequestId,
-        gatewayDispatchMs: result.metrics.gatewayDispatchMs ?? elapsedMs(dispatchStartedAt),
-        totalLatencyMs: elapsedMs(streamStartedAt),
-        forwardedContentFrames,
-        firstForwardedFrameMs,
-        firstContentFrameMs,
-        upstreamResponseBytes: result.metrics.upstreamResponseBytes ?? finalBody.length,
-        bodyBase64Bytes: result.response.bodyBase64?.length ?? 0,
-        via: 'hermes-hub-gateway'
-      }
-      if (forwardedContentFrames === 0) {
-        const replayedEventCount = await replayChatRunEvents(sendFrame, streamRequestId, finalBody, { ...metrics, bufferedReplay: true })
-        metrics = { ...metrics, bufferedReplay: true, replayedEventCount }
-      }
-      const terminalFrame = terminalFrameRef.frame
-      if (terminalFrame) {
-        sendFrame({
-          ...terminalFrame,
-          metrics: { ...terminalFrame.metrics, ...metrics }
-        } as RpcStreamFrame)
-      }
-      logRouter(statusLevel(result.response.status), 'Chat stream Gateway completed', {
-        requestId: streamRequestId,
-        hermesAgentId,
-        connectionKind: connection.kind,
-        status: result.response.status,
-        bodyBytes: finalBody.length,
-        gatewayDispatchMs: result.metrics.gatewayDispatchMs ?? elapsedMs(dispatchStartedAt),
-        totalLatencyMs: elapsedMs(streamStartedAt),
-        forwardedContentFrames,
-        firstForwardedFrameMs,
-        firstContentFrameMs,
-        bufferedReplay: metrics.bufferedReplay,
-        replayedEventCount: metrics.replayedEventCount,
-        upstreamContentType: metrics.upstreamContentType,
-        upstreamResponseBytes: metrics.upstreamResponseBytes
-      })
-      sendMetrics(metrics)
-      await downstreamWriter.flush()
-      response.end()
-      return
     }
+    const accepted = nativeConversationStore.updateSubmission(
+      payload.hermesAgentId,
+      submissionId,
+      'accepted',
+      { sessionId: acknowledgement.sessionId },
+    )
+    clientEventHub.publish({
+      scope: bridgeClientEventScope(payload),
+      conversationId: accepted.conversationId,
+      sessionId: accepted.sessionId,
+      submissionId,
+      event: 'submission.accepted',
+      data: { accepted: true },
+    })
+    sendJson(response, 202, {
+      accepted: true,
+      submissionId,
+      conversationId: accepted.conversationId,
+      sessionId: accepted.sessionId,
+    })
   } catch (error) {
-    logRouter('warn', 'Chat stream failed', {
-      requestId: streamRequestId,
-      hermesAgentId,
-      totalLatencyMs: elapsedMs(streamStartedAt)
-    }, error)
-    const metrics: GatewayRequestMetrics = {
-      requestId: streamRequestId,
-      totalLatencyMs: elapsedMs(streamStartedAt),
-      timeoutReason: /timeout/i.test(error instanceof Error ? error.message : String(error)) ? 'stream_timeout' : undefined,
-      disconnectReason: /disconnect/i.test(error instanceof Error ? error.message : String(error)) ? 'gateway_disconnect' : undefined,
-    }
-    if (!response.destroyed && !response.writableEnded) {
-      if (!upstreamTerminalErrorForwarded) {
-        sendFrame({
-          type: 'rpc_stream_error',
-          id: streamRequestId,
-          error: error instanceof Error ? error.message : String(error),
-          code: 'router_stream_error',
-          sentAt: Date.now(),
-          metrics
-        }, streamRequestId)
-      }
-      sendMetrics(metrics)
-      try {
-        await downstreamWriter.flush()
-        if (!response.destroyed && !response.writableEnded) response.end()
-      } catch (flushError) {
-        logRouter('warn', 'Chat stream downstream flush failed', {
-          requestId: streamRequestId,
-          hermesAgentId,
-        }, flushError)
-        if (!response.destroyed) response.destroy()
-      }
-    }
-  } finally {
-    const unresolvedPending = pendingRealtimeFrames.stats
-    if (unresolvedPending.retainedFrames > 0) {
-      logRouter('warn', 'Fresh-session realtime frames discarded without session id', {
-        requestId: streamRequestId,
-        hermesAgentId,
-        retainedFrames: unresolvedPending.retainedFrames,
-        retainedBytes: unresolvedPending.retainedBytes,
-        droppedFrames: unresolvedPending.droppedFrames,
-        droppedBytes: unresolvedPending.droppedBytes,
-        hasTerminal: unresolvedPending.hasTerminal
+    const code = typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : 'native_submission_failed'
+    if (code === 'gateway_submission_ambiguous') {
+      const ambiguous = nativeConversationStore.updateSubmission(
+        payload.hermesAgentId,
+        submissionId,
+        'ambiguous',
+        { errorCode: code },
+      )
+      publishConversationResync(
+        payload.hermesAgentId,
+        ambiguous.conversationId,
+        ambiguous.sessionId,
+        submissionId,
+        'gateway_submission_ambiguous',
+      )
+      throw Object.assign(new Error('Gateway submission outcome is ambiguous and will not be resent'), {
+        code: 'submission_ambiguous',
+        statusCode: 409,
       })
     }
-    clearInterval(keepAlive)
-    request.removeListener('aborted', abortDownstream)
-    response.removeListener('close', abortDownstream)
-    downstreamWriter.dispose()
+    if (nativeConversationStore.getSubmission(payload.hermesAgentId, submissionId)?.state === 'pending') {
+      nativeConversationStore.updateSubmission(payload.hermesAgentId, submissionId, 'failed', { errorCode: code })
+    }
+    throw error
+  }
+}
+
+async function handleNativePromptResponse(
+  request: IncomingMessage,
+  response: ServerResponse,
+  payload: BridgeTokenPayload,
+  rawPromptId: string,
+): Promise<void> {
+  requireGatewayBoundBridge(payload)
+  const promptId = decodeURIComponent(rawPromptId)
+  const input = await readJson(request)
+  const responseText = typeof input.response === 'string' ? input.response : ''
+  const pending = nativeConversationStore.pendingPrompt(payload.hermesAgentId, promptId)
+  if (!pending) {
+    throw Object.assign(new Error('Native prompt is not pending for this Agent'), {
+      code: 'prompt_not_pending',
+      statusCode: 409,
+    })
+  }
+  if (!responseText.trim()) {
+    throw Object.assign(new Error('response is required'), { code: 'validation_error', statusCode: 400 })
+  }
+  const requestedConversationId = typeof input.conversationId === 'string' ? input.conversationId.trim() : ''
+  if (requestedConversationId && requestedConversationId !== pending.conversationId) {
+    throw Object.assign(new Error('Prompt conversation does not match'), {
+      code: 'prompt_scope_mismatch',
+      statusCode: 409,
+    })
+  }
+  try {
+    const acknowledgement = await gatewayRegistry.respondPromptByAgentId(
+      payload.hermesAgentId,
+      { laneId: pending.laneId, promptId, response: responseText },
+      10_000,
+    )
+    if (!acknowledgement.accepted) {
+      throw Object.assign(new Error(acknowledgement.error || 'Gateway rejected native prompt response'), {
+        code: acknowledgement.code || 'prompt_not_pending',
+        statusCode: 409,
+      })
+    }
+    nativeConversationStore.resolvePrompt(payload.hermesAgentId, promptId)
+    sendJson(response, 202, {
+      accepted: true,
+      promptId,
+      conversationId: pending.conversationId,
+      sessionId: pending.sessionId,
+    })
+  } catch (error) {
+    const code = typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : ''
+    if (code === 'gateway_submission_ambiguous') {
+      publishConversationResync(
+        payload.hermesAgentId,
+        pending.conversationId,
+        pending.sessionId,
+        undefined,
+        'gateway_prompt_response_ambiguous',
+      )
+      throw Object.assign(new Error('Prompt response outcome is ambiguous and will not be resent'), {
+        code: 'prompt_response_ambiguous',
+        statusCode: 409,
+      })
+    }
+    throw error
   }
 }
 
@@ -1967,6 +1995,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return
   }
 
+  if (!pathname.startsWith('/bridge/')) {
+    logRouter('warn', 'HTTP route not found', { method: request.method, pathname })
+    sendJson(response, 404, { error: 'Not found' })
+    return
+  }
+
   const payload = requirePayload(request)
 
   if (pathname === '/bridge/auth/session' && request.method === 'GET') {
@@ -2013,7 +2047,18 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (pathname === '/bridge/chat-run/stream' && request.method === 'POST') {
-    await handleChatRunStream(request, response, payload)
+    sendNativeSessionRequired(response)
+    return
+  }
+
+  if (pathname === '/bridge/session-messages' && request.method === 'POST') {
+    await handleNativeSessionMessage(request, response, payload)
+    return
+  }
+
+  const promptResponseMatch = pathname.match(/^\/bridge\/session-prompts\/([^/]+)\/responses$/)
+  if (promptResponseMatch && request.method === 'POST') {
+    await handleNativePromptResponse(request, response, payload, promptResponseMatch[1])
     return
   }
 
@@ -2022,30 +2067,19 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     logRouter('info', 'Bridge sessions list requested', { queryKeys: queryKeys(search) })
     const proxied = await proxyViaGateway(payload, `api/sessions${search}`, { sourceHeaders: request.headers })
     logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge sessions list received', proxiedLogContext(proxied, undefined, startedAt))
-    sendGatewaySessionResponse(response, proxied.response, payload.hermesAgentId)
+    sendGatewaySessionListResponse(response, proxied.response, payload.hermesAgentId)
     return
   }
 
   if (pathname === '/bridge/sessions' && request.method === 'POST') {
-    const input = await readJson(request)
-    const startedAt = Date.now()
-    logRouter('info', 'Bridge create session requested', {
-      requestedSessionId: typeof input.session_id === 'string' ? input.session_id : typeof input.id === 'string' ? input.id : undefined,
-      hasMetadata: Boolean(input.metadata)
-    })
-    const proxied = await proxyViaGateway(payload, 'api/sessions', { method: 'POST', body: Buffer.from(JSON.stringify(sanitizeCreateSessionBody(input))), contentType: 'application/json', sourceHeaders: request.headers })
-    logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge create session upstream completed', proxiedLogContext(proxied, undefined, startedAt))
-    if (proxied.response.status >= 200 && proxied.response.status < 300) {
-      const sessionId = sessionIdFromGatewayResponse(proxied.response)
-      if (sessionId) sessionMetadataStore.set(payload.hermesAgentId, sessionId, input)
-    }
-    sendGatewaySessionResponse(response, proxied.response, payload.hermesAgentId)
+    sendNativeSessionRequired(response)
     return
   }
 
   const sessionGetMatch = pathname.match(/^\/bridge\/sessions\/([^/]+)$/)
   if (sessionGetMatch && request.method === 'GET') {
-    const sessionId = encodeURIComponent(decodeURIComponent(sessionGetMatch[1]))
+    const clientSessionId = decodeURIComponent(sessionGetMatch[1])
+    const sessionId = encodeURIComponent(sessionReadTarget(payload.hermesAgentId, clientSessionId))
     const startedAt = Date.now()
     logRouter('info', 'Bridge session detail requested', { sessionId: decodeURIComponent(sessionGetMatch[1]) })
     const proxied = await proxyViaGateway(payload, `api/sessions/${sessionId}`, { sourceHeaders: request.headers })
@@ -2053,29 +2087,36 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       ...proxiedLogContext(proxied, undefined, startedAt),
       sessionId: decodeURIComponent(sessionGetMatch[1])
     })
-    sendGatewaySessionResponse(response, proxied.response, payload.hermesAgentId)
+    const conversation = nativeConversationStore.getByConversationId(payload.hermesAgentId, clientSessionId)
+    if (!conversation) {
+      sendGatewaySessionResponse(response, proxied.response, payload.hermesAgentId)
+      return
+    }
+    const parsed = asRecord(parseJsonBuffer(Buffer.from(proxied.response.bodyBase64 || '', 'base64')))
+    const session = asRecord(parsed?.session) || asRecord(parsed?.data) || parsed
+    sendJson(response, proxied.response.status, {
+      ...(parsed || {}),
+      session: {
+        ...(session || {}),
+        id: conversation.conversationId,
+        session_id: conversation.conversationId,
+        conversation_id: conversation.conversationId,
+        hermes_session_id: conversation.sessionId,
+        native: true,
+        readOnly: false,
+        read_only: false,
+      },
+    })
     return
   }
 
   if (sessionGetMatch && request.method === 'PATCH') {
-    const input = await readJson(request)
-    if (typeof input.archived !== 'boolean') {
-      sendJson(response, 400, { error: 'archived must be a boolean' })
-      return
-    }
-    await handleBridgeArchiveSession(
-      request,
-      response,
-      payload,
-      url,
-      sessionGetMatch[1],
-      input.archived
-    )
+    sendSessionMutationRejected(response)
     return
   }
 
   if (sessionGetMatch && request.method === 'DELETE') {
-    await handleBridgeDeleteSession(request, response, payload, url, sessionGetMatch[1])
+    sendSessionMutationRejected(response)
     return
   }
 
@@ -2087,7 +2128,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (sessionActionMatch && request.method === 'GET' && sessionActionMatch[2] === 'usage') {
     const rawSessionId = decodeURIComponent(sessionActionMatch[1])
-    const sessionId = encodeURIComponent(rawSessionId)
+    const sessionId = encodeURIComponent(sessionReadTarget(payload.hermesAgentId, rawSessionId))
     const startedAt = Date.now()
     let proxied = await proxyViaGateway(
       payload,
@@ -2097,7 +2138,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (proxiedStatus(proxied) === 404 || proxiedStatus(proxied) === 405) {
       proxied = await proxyViaGateway(payload, 'api/ws', {
         method: 'POST',
-        body: gatewayRpcBody('session.usage', { session_id: rawSessionId }, 5_000),
+      body: gatewayRpcBody('session.usage', { session_id: decodeURIComponent(sessionId) }, 5_000),
         contentType: 'application/json',
         sourceHeaders: request.headers,
         timeoutMs: 6_000
@@ -2112,7 +2153,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (sessionActionMatch && request.method === 'GET' && sessionActionMatch[2] === 'context') {
-    const sessionId = decodeURIComponent(sessionActionMatch[1])
+    const clientSessionId = decodeURIComponent(sessionActionMatch[1])
+    const sessionId = sessionReadTarget(payload.hermesAgentId, clientSessionId)
     const encodedSessionId = encodeURIComponent(sessionId)
     const startedAt = Date.now()
     const proxied = await proxyViaGateway(payload, 'api/ws', {
@@ -2165,7 +2207,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (sessionActionMatch && request.method === 'GET' && sessionActionMatch[2] === 'messages') {
-    const sessionId = encodeURIComponent(decodeURIComponent(sessionActionMatch[1]))
+    const clientSessionId = decodeURIComponent(sessionActionMatch[1])
+    const sessionId = encodeURIComponent(sessionReadTarget(payload.hermesAgentId, clientSessionId))
     const offset = url.searchParams.get('offset') || '0'
     const limit = url.searchParams.get('limit') || '150'
     const startedAt = Date.now()
@@ -2186,25 +2229,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (sessionActionMatch && request.method === 'POST' && sessionActionMatch[2] === 'rename') {
-    const sessionId = encodeURIComponent(decodeURIComponent(sessionActionMatch[1]))
-    const input = await readJson(request)
-    const title = typeof input.title === 'string' ? input.title.trim() : ''
-    if (!title) {
-      sendJson(response, 400, { error: 'title is required', code: 'validation_error' })
-      return
-    }
-    const body = Buffer.from(JSON.stringify({ title }), 'utf8')
-    const startedAt = Date.now()
-    logRouter('info', 'Bridge session rename requested', {
-      sessionId: decodeURIComponent(sessionActionMatch[1]),
-      bodyBytes: body.length
-    })
-    const proxied = await proxyViaGateway(payload, `api/sessions/${sessionId}`, { method: 'PATCH', body, contentType: 'application/json', sourceHeaders: request.headers })
-    logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge session rename completed', {
-      ...proxiedLogContext(proxied, undefined, startedAt),
-      sessionId: decodeURIComponent(sessionActionMatch[1])
-    })
-    sendGatewaySessionResponse(response, proxied.response, payload.hermesAgentId)
+    sendSessionMutationRejected(response)
     return
   }
 
@@ -2214,52 +2239,27 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (sessionActionMatch && request.method === 'POST' && sessionActionMatch[2] === 'fork') {
-    await handleBridgeForkSession(request, response, payload, url, sessionActionMatch[1])
+    sendUnsupportedGatewayOperation(response, 'native session fork')
     return
   }
 
   if (sessionActionMatch && request.method === 'POST' && sessionActionMatch[2] === 'archive') {
-    await handleBridgeArchiveSession(
-      request,
-      response,
-      payload,
-      url,
-      sessionActionMatch[1],
-      true
-    )
+    sendSessionMutationRejected(response)
     return
   }
 
   if (sessionActionMatch && request.method === 'POST' && sessionActionMatch[2] === 'delete') {
-    await handleBridgeDeleteSession(request, response, payload, url, sessionActionMatch[1])
+    sendSessionMutationRejected(response)
     return
   }
 
   if (pathname === '/bridge/command/dispatch' && request.method === 'POST') {
-    const input = await readJson(request)
-    const rpc = commandDispatchGatewayRequest(input)
-    const startedAt = Date.now()
-    logRouter('info', 'Bridge command dispatch requested', {
-      method: rpc.method,
-      hasSessionId: Boolean(rpc.params.session_id)
-    })
-    const proxied = await proxyViaGateway(payload, 'api/ws', {
-      method: 'POST',
-      body: gatewayRpcBody(rpc.method, rpc.params),
-      contentType: 'application/json',
-      sourceHeaders: request.headers
-    })
-    logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge command dispatch completed', {
-      ...proxiedLogContext(proxied, undefined, startedAt),
-      method: rpc.method,
-      hasSessionId: Boolean(rpc.params.session_id)
-    })
-    sendGatewayResponse(response, proxied.response)
+    sendNativeSessionRequired(response)
     return
   }
 
   if (pathname === '/bridge/chat-run' && request.method === 'POST') {
-    sendUnsupportedGatewayOperation(response, 'non-streaming chat runs; use /bridge/chat-run/stream')
+    sendNativeSessionRequired(response)
     return
   }
 

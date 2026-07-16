@@ -3,12 +3,14 @@ import type { WebSocket } from 'ws'
 
 export interface BridgeClientEvent {
   type: 'bridge.event'
-  version: 1
+  version: 2
   cursor: number
   event_id: string
-  session_id: string
-  stream_id: string
-  frame: unknown
+  conversation_id: string
+  session_id?: string
+  submission_id?: string
+  event: string
+  data: Record<string, unknown>
   sent_at: number
 }
 
@@ -27,9 +29,16 @@ export interface ClientEventAttachResult {
 
 export interface ClientEventPublishInput {
   scope: string
-  sessionId: string
-  streamId: string
-  frame: unknown
+  conversationId?: string
+  sessionId?: string
+  submissionId?: string
+  event?: string
+  data?: Record<string, unknown>
+  eventId?: string
+  // Legacy request-bound stream fields remain accepted only so dead code can
+  // compile during the hard cutover. Production routes no longer invoke them.
+  streamId?: string
+  frame?: unknown
   originClientId?: string
 }
 
@@ -43,7 +52,6 @@ interface JournalEntry {
   event: BridgeClientEvent
   encoded: string
   bytes: number
-  originClientId?: string
 }
 
 interface ScopeState {
@@ -51,6 +59,7 @@ interface ScopeState {
   replay: JournalEntry[]
   replayBytes: number
   droppedThroughCursor: number
+  eventsById: Map<string, BridgeClientEvent>
 }
 
 export interface ClientEventHubOptions {
@@ -156,7 +165,7 @@ export class ClientEventHub {
 
     this.send(socket, {
       type: 'bridge.ready',
-      version: 1,
+      version: 2,
       cursor: currentCursor,
       resume_cursor: resumeCursor,
       heartbeat_interval_ms: this.heartbeatIntervalMs
@@ -165,7 +174,7 @@ export class ClientEventHub {
     if (resyncRequired) {
       this.send(socket, {
         type: 'bridge.resync_required',
-        version: 1,
+        version: 2,
         cursor: currentCursor,
         oldest_available_cursor: oldestCursor
       })
@@ -176,7 +185,6 @@ export class ClientEventHub {
     for (const entry of replay) {
       const event = entry.event
       if (event.cursor <= resumeCursor) continue
-      if (entry.originClientId && entry.originClientId === subscription.clientId) continue
       if (!this.send(socket, event, entry.encoded)) break
       replayed += 1
     }
@@ -187,16 +195,21 @@ export class ClientEventHub {
   publish(input: ClientEventPublishInput): BridgeClientEvent {
     const state = this.scopeState(input.scope)
     this.retainJournal(input.scope)
+    const eventId = input.eventId || `evt_${randomUUID()}`
+    const duplicate = state.eventsById.get(eventId)
+    if (duplicate) return duplicate
     const cursor = state.cursor + 1
     state.cursor = cursor
     const event: BridgeClientEvent = {
       type: 'bridge.event',
-      version: 1,
+      version: 2,
       cursor,
-      event_id: `evt_${randomUUID()}`,
-      session_id: input.sessionId,
-      stream_id: input.streamId,
-      frame: input.frame,
+      event_id: eventId,
+      conversation_id: input.conversationId || input.sessionId || 'unknown',
+      ...(input.sessionId ? { session_id: input.sessionId } : {}),
+      ...(input.submissionId ? { submission_id: input.submissionId } : {}),
+      event: input.event || 'legacy.frame',
+      data: input.data || { frame: input.frame },
       sent_at: Date.now()
     }
     const encoded = JSON.stringify(event)
@@ -204,18 +217,14 @@ export class ClientEventHub {
       event,
       encoded,
       bytes: Buffer.byteLength(encoded, 'utf8'),
-      originClientId: input.originClientId
     }
     state.replay.push(entry)
+    state.eventsById.set(eventId, event)
     state.replayBytes += entry.bytes
     this.trimReplay(state)
 
     for (const subscriber of this.subscribers) {
       if (subscriber.scope !== input.scope) continue
-      if (input.originClientId && subscriber.clientId === input.originClientId) {
-        this.sendCursor(subscriber.socket, cursor)
-        continue
-      }
       this.send(subscriber.socket, event, encoded)
     }
     return event
@@ -237,7 +246,8 @@ export class ClientEventHub {
       cursor: 0,
       replay: [],
       replayBytes: 0,
-      droppedThroughCursor: 0
+      droppedThroughCursor: 0,
+      eventsById: new Map(),
     }
     this.scopeByName.set(scope, created)
     return created
@@ -261,6 +271,7 @@ export class ClientEventHub {
           state.replay = []
           state.replayBytes = 0
           state.droppedThroughCursor = state.cursor
+          state.eventsById.clear()
         }
         evicted = true
         break
@@ -288,6 +299,9 @@ export class ClientEventHub {
         state.droppedThroughCursor,
         removed.event.cursor
       )
+      if (state.eventsById.get(removed.event.event_id) === removed.event) {
+        state.eventsById.delete(removed.event.event_id)
+      }
     }
   }
 
@@ -311,7 +325,7 @@ export class ClientEventHub {
   private sendCursor(socket: WebSocket, cursor: number): boolean {
     return this.send(socket, {
       type: 'bridge.cursor',
-      version: 1,
+      version: 2,
       cursor
     })
   }
