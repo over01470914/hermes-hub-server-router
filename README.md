@@ -62,8 +62,12 @@ Use `pnpm router:stop` to stop a Router launched by `router:dev`, including one
 started in the background. The launcher records its own child PID in a private
 state file beside the selected Router environment and, where the OS permits,
 verifies the PID still has the recorded launch identity before stopping it. It never
-guesses by port or kills an untracked process; a missing or stale state file is
-reported as an idempotent no-op.
+guesses by process name or kills an unverified process. For a Router started
+before PID tracking existed, Windows can recover it only after the configured
+`/router/health` proves it is Hermes Hub Router, then resolves that listener's
+PID. A missing or stale state file is otherwise an idempotent no-op.
+When using a non-default local pairing configuration, pass the same
+`--pairing-config <path>` option used for `router:dev`.
 Managed Router installation creates the same secret in its private Router
 environment file; `--rotate-agent-approval-token` is the explicit managed
 rotation switch.

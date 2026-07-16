@@ -16,6 +16,8 @@ import {
   ensureRouterEnvFile,
   loadRouterEnvFile,
   preflightRouterStart,
+  routerListenerPid,
+  stopRouterProcess,
 } from './router-local-env.mjs'
 
 const workdir = mkdtempSync(join(tmpdir(), 'hermes-hub-router-env-'))
@@ -407,17 +409,15 @@ try {
         return false
       }
     }, 'managed Router health')
-    const stopped = spawnSync(process.execPath, [
-      scriptPath,
-      'stop',
-      '--router-env', managedRouterEnvFile,
-    ], {
-      cwd: workdir,
-      encoding: 'utf8',
-      windowsHide: true,
+    assert.ok(routerListenerPid(managedRouterPort), 'managed Router listener PID must be discoverable')
+    rmSync(managedRouterStatePath)
+    const stopped = await stopRouterProcess(managedRouterEnvFile, {
+      HERMES_HUB_ROUTER_HOST: '127.0.0.1',
+      HERMES_HUB_ROUTER_PORT: String(managedRouterPort),
+      HERMES_HUB_ROUTER_URL: `http://127.0.0.1:${managedRouterPort}`,
     })
-    assert.equal(stopped.status, 0, stopped.stderr)
-    assert.match(stopped.stdout, /Stopped tracked Router process \d+\./)
+    assert.equal(stopped.stopped, true)
+    assert.equal(stopped.discovered, true)
     await waitFor(() => !existsSync(managedRouterStatePath), 'managed Router state cleanup')
   } finally {
     if (managedRouter.exitCode == null) {
@@ -443,10 +443,11 @@ try {
       'the local Gateway launcher injects the token only into a verified installer child and rejects remote Router URLs or untrusted package mirrors',
        'startup preflight distinguishes legacy and Gateway-only Router listeners',
        'startup preflight accepts an available configured port',
-       'the stop command terminates only the tracked background Router process and removes its private state',
+       'the stop command terminates a verified legacy background Router when its PID state is unavailable',
       ...(process.platform === 'win32' ? ['the environment file has a non-inherited private Windows ACL'] : []),
     ],
   }, null, 2) + '\n')
 } finally {
-  rmSync(workdir, { recursive: true, force: true })
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 500))
+  rmSync(workdir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 }

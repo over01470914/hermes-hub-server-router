@@ -353,9 +353,76 @@ async function waitForProcessExit(pid, timeoutMs) {
   return !processIsRunning(pid)
 }
 
-export async function stopRouterProcess(envFile) {
+export function routerListenerPid(port) {
+  if (process.platform !== 'win32') return undefined
+  const powershell = join(windowsSystemExecutable('WindowsPowerShell'), 'v1.0', 'powershell.exe')
+  const powershellResult = spawnSync(powershell, [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    `$connection = Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -ne $connection) { [Console]::Out.Write($connection.OwningProcess) }`,
+  ], { encoding: 'utf8', windowsHide: true })
+  const powershellPid = Number(String(powershellResult.stdout || '').trim())
+  if (Number.isSafeInteger(powershellPid) && powershellPid > 0) return powershellPid
+  const result = spawnSync(windowsSystemExecutable('netstat.exe'), ['-ano', '-p', 'tcp'], {
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+  if (result.status !== 0) return undefined
+  for (const line of String(result.stdout || '').split(/\r?\n/)) {
+    const columns = line.trim().split(/\s+/)
+    if (columns.length < 5 || columns[0].toUpperCase() !== 'TCP') continue
+    if (!columns[1].endsWith(`:${port}`) || columns.at(-2).toUpperCase() !== 'LISTENING') continue
+    const pid = Number(columns.at(-1))
+    if (Number.isSafeInteger(pid) && pid > 0) return pid
+  }
+  return undefined
+}
+
+async function terminateRouterProcess(pid) {
+  let exited = false
+  try {
+    process.kill(pid, 'SIGTERM')
+    exited = await waitForProcessExit(pid, 1_500)
+  } catch (error) {
+    if (!processIsRunning(pid)) return
+    if (process.platform !== 'win32') throw error
+  }
+  if (!exited) {
+    if (process.platform === 'win32') {
+      const result = spawnSync(windowsSystemExecutable('taskkill.exe'), ['/pid', String(pid), '/t', '/f'], {
+        encoding: 'utf8',
+        windowsHide: true,
+      })
+      if (result.status !== 0 && processIsRunning(pid)) {
+        throw new Error(`Could not force-stop tracked Router PID ${pid}.`)
+      }
+    } else {
+      process.kill(pid, 'SIGKILL')
+    }
+    if (!await waitForProcessExit(pid, 1_500)) {
+      throw new Error(`Tracked Router PID ${pid} did not exit.`)
+    }
+  }
+}
+
+export async function stopRouterProcess(envFile, environment = process.env) {
   const statePath = defaultRouterProcessStatePath(envFile)
-  if (!existsSync(statePath)) return { stopped: false, statePath }
+  if (!existsSync(statePath)) {
+    const port = Number(environment.HERMES_HUB_ROUTER_PORT || 4320)
+    const host = environment.HERMES_HUB_ROUTER_HOST || '0.0.0.0'
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      throw new Error('HERMES_HUB_ROUTER_PORT must be an integer between 1 and 65535.')
+    }
+    const health = await probeHealth(healthProbeUrl(environment, host, port))
+    if (health.payload?.service !== 'hermes-hub-router') return { stopped: false, statePath }
+    const pid = routerListenerPid(port)
+    if (!pid) {
+      throw new Error(`Verified Hermes Hub Router is listening on port ${port}, but its process PID could not be resolved.`)
+    }
+    await terminateRouterProcess(pid)
+    return { stopped: true, discovered: true, statePath, pid }
+  }
   const state = routerProcessState(statePath)
   if (!processIsRunning(state.pid)) {
     removeRouterProcessState(statePath, state.pid)
@@ -366,33 +433,7 @@ export async function stopRouterProcess(envFile) {
     throw new Error(`Refusing to stop PID ${state.pid}: it does not match the Router launch identity recorded by this launcher.`)
   }
 
-  let exited = false
-  try {
-    process.kill(state.pid, 'SIGTERM')
-    exited = await waitForProcessExit(state.pid, 1_500)
-  } catch (error) {
-    if (!processIsRunning(state.pid)) {
-      removeRouterProcessState(statePath, state.pid)
-      return { stopped: false, stale: true, statePath, pid: state.pid }
-    }
-    if (process.platform !== 'win32') throw error
-  }
-  if (!exited) {
-    if (process.platform === 'win32') {
-      const result = spawnSync(windowsSystemExecutable('taskkill.exe'), ['/pid', String(state.pid), '/t', '/f'], {
-        encoding: 'utf8',
-        windowsHide: true,
-      })
-      if (result.status !== 0 && processIsRunning(state.pid)) {
-        throw new Error(`Could not force-stop tracked Router PID ${state.pid}.`)
-      }
-    } else {
-      process.kill(state.pid, 'SIGKILL')
-    }
-    if (!await waitForProcessExit(state.pid, 1_500)) {
-      throw new Error(`Tracked Router PID ${state.pid} did not exit.`)
-    }
-  }
+  await terminateRouterProcess(state.pid)
   removeRouterProcessState(statePath, state.pid)
   return { stopped: true, statePath, pid: state.pid }
 }
@@ -557,7 +598,7 @@ function usage() {
     'Usage:',
     '  node router-local-env.mjs init [--router-env <path>] [--pairing-config <path>]',
     '  node router-local-env.mjs run [--router-env <path>] [--pairing-config <path>]',
-    '  node router-local-env.mjs stop [--router-env <path>]',
+    '  node router-local-env.mjs stop [--router-env <path>] [--pairing-config <path>]',
     '  node router-local-env.mjs rotate-approval-token [--router-env <path>] [--pairing-config <path>]',
     '  node router-local-env.mjs clear-approval-token [--router-env <path>] [--pairing-config <path>]',
     '  node router-local-env.mjs pair-gateway --installer <verified-installer-path> --request-id <pair-id> [--router <loopback-url>] [--source-base <Router package mirror>] [--router-env <path>] [--pairing-config <path>]',
@@ -565,7 +606,7 @@ function usage() {
     'Hermes Hub monorepo usage:',
     '  node apps/hermes-hub-server-router/router-local-env.mjs init [--router-env <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs run [--router-env <path>]',
-    '  node apps/hermes-hub-server-router/router-local-env.mjs stop [--router-env <path>]',
+    '  node apps/hermes-hub-server-router/router-local-env.mjs stop [--router-env <path>] [--pairing-config <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs rotate-approval-token [--router-env <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs clear-approval-token [--router-env <path>]',
     '  pnpm router:pair-gateway -- --installer <verified-installer-path> --request-id <pair-id> [--router <loopback-url>] [--source-base <Router package mirror>]',
@@ -652,9 +693,12 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     return
   }
   if (command === 'stop') {
-    const result = await stopRouterProcess(envFile)
+    const environment = existsSync(envFile)
+      ? loadRouterEnvFile(envFile, process.env, localOptions)
+      : process.env
+    const result = await stopRouterProcess(envFile, environment)
     if (result.stopped) {
-      process.stdout.write(`Stopped tracked Router process ${result.pid}.\n`)
+      process.stdout.write(`${result.discovered ? 'Stopped verified Router process' : 'Stopped tracked Router process'} ${result.pid}.\n`)
     } else if (result.stale) {
       process.stdout.write(`No tracked Router is running; removed stale process state for PID ${result.pid}.\n`)
     } else {
