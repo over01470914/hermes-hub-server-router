@@ -107,8 +107,8 @@ The pairing prompt follows the published GitHub-skill plus npm-CLI pattern: it
 first installs/loads `hermes-hub-gateway-pair` from the public GitHub skill
 source, then runs `npm install -g @over01470914/hermes-hub-gateway@latest` and
 `hermes-hub-gateway doctor --runtime hermes`. This refreshes a stale CLI,
-verifies the Hermes CLI and Gateway, enables the loopback API when needed, restarts Gateway, and
-checks local API health before a pairing mutation begins. The later `pair`
+verifies the Hermes CLI and Gateway, enables the loopback API when needed, and restarts Gateway
+without using a fixed loopback API probe as a pairing gate. The later `pair`
 command owns the same immutable release-policy comparison, no-redirect
 download, byte/SHA-256 verification, and one direct installer child as before.
 It forbids manual approval probes, alternate URLs, generated helpers, and any

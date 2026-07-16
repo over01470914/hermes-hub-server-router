@@ -307,7 +307,7 @@ export function buildPairingPrompt(record: PairingRequestRecord): string {
     '3. Install or upgrade the complete Hermes Hub Gateway npm package, even if an older command already exists. Do not use npx for this persistent host tool.',
     '   npm install -g @over01470914/hermes-hub-gateway@latest',
     '',
-    '4. Load `hermes-hub-gateway-pair`, then run the CLI health step. It verifies the Hermes CLI and Hermes Gateway, enables the local API server when needed, restarts Gateway, and confirms the local Hermes API is healthy. Allow normal host permissions, loopback HTTP, public HTTPS, OS-temp writes, and Hermes plugin installation.',
+    '4. Load `hermes-hub-gateway-pair`, then run the CLI preparation step. It verifies the Hermes CLI and Hermes Gateway, enables the local API server when needed, and restarts Gateway without making a fixed loopback API probe a pairing gate. Allow normal host permissions, loopback HTTP, public HTTPS, OS-temp writes, and Hermes plugin installation.',
     '   hermes-hub-gateway doctor --runtime hermes',
     '',
     '5. After doctor succeeds, run the pairing command exactly once. The CLI validates the current Router record before pairing and its verified installer reinstalls a missing or version-mismatched Gateway plugin. For a loopback Router, the CLI asks Router to repair a missing or malformed local approval configuration without printing or exposing its token. The CLI owns deterministic release validation, installer download/hash verification, approval, configuration, restart, online verification, and rollback. Do not generate a helper or call install.mjs directly. Do not create a token or edit a pairing configuration.',
