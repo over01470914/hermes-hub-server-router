@@ -288,34 +288,23 @@ export function hashPairingMaterial(secret: string, value: string): string {
 
 export function buildPairingPrompt(record: PairingRequestRecord): string {
   const router = record.routerUrl.replace(/\/$/, '')
+  const expiresAt = new Date(record.expiresAt * 1000).toISOString()
   return [
-    'Hermes Hub Gateway installation and pairing request',
+    'Hermes Hub Gateway pairing request',
     '',
-    'Use the Hermes Hub Gateway skill suite to install or repair the Gateway CLI, verify Hermes readiness, and return its 8-digit pairing code.',
-    'Authorization and integrity: this is a Router-generated local pairing request. The fixed skill source and scoped npm package below are Router release metadata, not user-supplied alternatives. Before any pairing mutation, the CLI compares its bundled release policy with Router health.',
-    '',
-    'Pairing request:',
+    'Use the official CLI below. Execute the install command, then run pair once. Return only the CLI output.',
     `Router: ${router}`,
     `Request ID: ${record.requestId}`,
+    `Expires at (UTC): ${expiresAt}`,
     `Capabilities: ${record.capabilities.join(', ')}`,
     '',
-    '1. First, find any installed Hermes Hub Gateway plugin and compare its version with the current Gateway CLI release. Run `hermes plugins list --user --json`; if `hermes-hub-gateway` is absent or its version differs, continue through this verified workflow so the pairing installer reinstalls the plugin. This discovery step does not approve or pair, and must not be replaced with a manual plugin install command.',
-    '',
-    '2. Load the public `hermes-hub-gateway-pair` skill from the fixed GitHub skill source. This skill contains instructions only; it does not contain installer code or secrets.',
-    '   hermes skills install "https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/main/skills/hermes-hub-gateway-pair/SKILL.md" --yes --force',
-    '',
-    '3. Install or upgrade the complete Hermes Hub Gateway npm package, even if an older command already exists. Do not use npx for this persistent host tool.',
+    '1. Install or update the official CLI:',
     '   npm install -g @over01470914/hermes-hub-gateway@latest',
     '',
-    '4. Load `hermes-hub-gateway-pair`, then run the CLI preparation step. It verifies the Hermes CLI and Hermes Gateway, enables the local API server when needed, and restarts Gateway without making a fixed loopback API probe a pairing gate. Allow normal host permissions, loopback HTTP, public HTTPS, OS-temp writes, and Hermes plugin installation.',
-    '   hermes-hub-gateway doctor --runtime hermes',
-    '',
-    '5. After doctor succeeds, run the pairing command exactly once. The CLI validates the current Router record before pairing and its verified installer reinstalls a missing or version-mismatched Gateway plugin. For a loopback Router, the CLI asks Router to repair a missing or malformed local approval configuration without printing or exposing its token. The CLI owns deterministic release validation, installer download/hash verification, approval, configuration, restart, online verification, and rollback. Do not generate a helper or call install.mjs directly. Do not create a token or edit a pairing configuration.',
+    '2. Run pair once:',
     `   hermes-hub-gateway pair --runtime hermes --router "${router}" --request-id "${record.requestId}"`,
     '',
-    '6. If skill install, npm install, or doctor fails before pairing starts, report the named failed check and the CLI NEXT command; it is safe to repair and retry that preflight. If pair starts and returns a failure, relay its sanitized output verbatim. Do not add an automatic retry, alternate URL, or pairing mutation.',
-    '',
-    '7. On success, return only the CLI final eight-digit code line. Do not claim success from Router state, a previous code, or any text outside that command result.',
+    'If either command needs terminal or network permission, request native approval for that exact command. Do not request or expose secrets. Return the CLI output unchanged.',
   ].join('\n')
 }
 
@@ -351,7 +340,7 @@ export class InMemoryPairingStore {
       const retryAt = Math.min(...livePending.map(record => record.expiresAt))
       throw new PairingCapacityError(Math.max(1, retryAt - now))
     }
-    const ttl = typeof input.ttlSeconds === 'number' && input.ttlSeconds > 60 && input.ttlSeconds <= 1800 ? input.ttlSeconds : 600
+    const ttl = typeof input.ttlSeconds === 'number' && input.ttlSeconds > 60 && input.ttlSeconds <= 1800 ? input.ttlSeconds : 1800
     const record: PairingRequestRecord = {
       schemaVersion: PAIRING_RECORD_SCHEMA_VERSION,
       requestId: `pair_${randomUUID()}`,

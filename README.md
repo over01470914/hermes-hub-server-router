@@ -103,18 +103,16 @@ immutable public release repository, commit, URLs, installer bytes, and SHA-256.
 An Agent uses the public content-addressed release in production without
 assuming the Router checkout layout or deployment base path.
 
-The pairing prompt follows the published GitHub-skill plus npm-CLI pattern: it
-first installs/loads `hermes-hub-gateway-pair` from the public GitHub skill
-source, then runs `npm install -g @over01470914/hermes-hub-gateway@latest` and
-`hermes-hub-gateway doctor --runtime hermes`. This refreshes a stale CLI,
-verifies the Hermes CLI and Gateway, enables the loopback API when needed, and restarts Gateway
-without using a fixed loopback API probe as a pairing gate. The later `pair`
-command owns the same immutable release-policy comparison, no-redirect
-download, byte/SHA-256 verification, and one direct installer child as before.
-It forbids manual approval probes, alternate URLs, generated helpers, and any
-automatic retry after the pair mutation starts. A failed npm-install/doctor preflight
-returns a named failure plus a safe `NEXT:` command; that preflight may be
-repaired and retried. Credentials and absolute host paths are never printed.
+The pairing prompt follows the concise npm-CLI pattern: it displays the
+Router-issued UTC expiry, runs `npm install -g
+@over01470914/hermes-hub-gateway@latest`, then runs one `hermes-hub-gateway
+pair` command. `pair` performs its own Hermes readiness check and owns the
+immutable release-policy comparison, no-redirect download, byte/SHA-256
+verification, and one direct installer child. Prompt text cannot authorize
+terminal access; the agent must request native approval for the exact command
+when needed. It forbids manual approval probes, alternate URLs, generated
+helpers, and automatic retry. Credentials and absolute host paths are never
+printed.
 The Router accepts both prefixed requests and requests whose trusted reverse
 proxy has already removed that prefix.
 
