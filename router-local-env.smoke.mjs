@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { once } from 'node:events'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 import {
   clearRouterApprovalToken,
   defaultPairingConfigPath,
+  defaultRouterProcessStatePath,
   ensureRouterEnvFile,
   loadRouterEnvFile,
   preflightRouterStart,
@@ -38,6 +40,14 @@ async function closeServer(server) {
   await new Promise((resolvePromise, reject) => {
     server.close(error => error ? reject(error) : resolvePromise())
   })
+}
+
+async function waitFor(check, description) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    if (await check()) return
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 50))
+  }
+  throw new Error(`Timed out waiting for ${description}.`)
 }
 
 try {
@@ -362,6 +372,60 @@ try {
     HERMES_HUB_ROUTER_URL: `http://127.0.0.1:${availablePort}`,
   }, { timeoutMs: 50 })
 
+  const routerPortReservation = await listenHealth({ ok: true })
+  const managedRouterPort = routerPortReservation.port
+  await closeServer(routerPortReservation.server)
+  const managedRouterEnvFile = join(workdir, 'managed-router.env')
+  const managedRouterPairingConfigPath = join(workdir, 'managed-router-hermes-home', 'hermes-hub', 'pairing.json')
+  writeFileSync(managedRouterEnvFile, [
+    'HERMES_HUB_ROUTER_HOST=127.0.0.1',
+    `HERMES_HUB_ROUTER_PORT=${managedRouterPort}`,
+    `HERMES_HUB_ROUTER_URL=http://127.0.0.1:${managedRouterPort}`,
+    '',
+  ].join('\n'))
+  ensureRouterEnvFile(managedRouterEnvFile, {
+    platform: process.platform,
+    pairingConfigPath: managedRouterPairingConfigPath,
+  })
+  const managedRouter = spawn(process.execPath, [
+    scriptPath,
+    'run',
+    '--router-env', managedRouterEnvFile,
+    '--pairing-config', managedRouterPairingConfigPath,
+  ], {
+    cwd: process.cwd(),
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  const managedRouterStatePath = defaultRouterProcessStatePath(managedRouterEnvFile)
+  try {
+    await waitFor(() => existsSync(managedRouterStatePath), 'managed Router process state')
+    await waitFor(async () => {
+      try {
+        return (await fetch(`http://127.0.0.1:${managedRouterPort}/router/health`)).ok
+      } catch {
+        return false
+      }
+    }, 'managed Router health')
+    const stopped = spawnSync(process.execPath, [
+      scriptPath,
+      'stop',
+      '--router-env', managedRouterEnvFile,
+    ], {
+      cwd: workdir,
+      encoding: 'utf8',
+      windowsHide: true,
+    })
+    assert.equal(stopped.status, 0, stopped.stderr)
+    assert.match(stopped.stdout, /Stopped tracked Router process \d+\./)
+    await waitFor(() => !existsSync(managedRouterStatePath), 'managed Router state cleanup')
+  } finally {
+    if (managedRouter.exitCode == null) {
+      managedRouter.kill('SIGTERM')
+      await once(managedRouter, 'exit')
+    }
+  }
+
   process.stdout.write(JSON.stringify({
     ok: true,
     checks: [
@@ -377,8 +441,9 @@ try {
       'non-file environment targets fail closed before reading',
       'CLI initialization, rotation, and clearing never print token values',
       'the local Gateway launcher injects the token only into a verified installer child and rejects remote Router URLs or untrusted package mirrors',
-      'startup preflight distinguishes legacy and Gateway-only Router listeners',
-      'startup preflight accepts an available configured port',
+       'startup preflight distinguishes legacy and Gateway-only Router listeners',
+       'startup preflight accepts an available configured port',
+       'the stop command terminates only the tracked background Router process and removes its private state',
       ...(process.platform === 'win32' ? ['the environment file has a non-inherited private Windows ACL'] : []),
     ],
   }, null, 2) + '\n')

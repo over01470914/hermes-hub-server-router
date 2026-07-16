@@ -23,7 +23,10 @@ import { fileURLToPath } from 'node:url'
 const approvalTokenKey = 'HERMES_HUB_AGENT_APPROVAL_TOKEN'
 const pairingConfigSchemaVersion = 1
 const pairingConfigFileName = 'pairing.json'
+const routerProcessStateSchemaVersion = 1
+const routerProcessStateSuffix = '.router-process.json'
 const routerPackageRoot = dirname(fileURLToPath(import.meta.url))
+const routerEntryPath = join(routerPackageRoot, 'src', 'bridgeServer.ts')
 
 function windowsSystemExecutable(name) {
   const windowsRoot = process.env.SystemRoot || process.env.WINDIR
@@ -276,6 +279,124 @@ function defaultEnvFile(cwd) {
   return join(cwd, '.env')
 }
 
+export function defaultRouterProcessStatePath(envFile) {
+  return `${resolve(envFile)}${routerProcessStateSuffix}`
+}
+
+function routerProcessState(path) {
+  hardenPrivateEnvFile(path)
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    throw new Error('Router process state is malformed.')
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
+    parsed.schemaVersion !== routerProcessStateSchemaVersion ||
+    !Number.isSafeInteger(parsed.pid) || parsed.pid <= 0 ||
+    parsed.routerEntry !== routerEntryPath ||
+    typeof parsed.processStartedAt !== 'string' || !parsed.processStartedAt) {
+    throw new Error('Router process state is invalid.')
+  }
+  return parsed
+}
+
+function writeRouterProcessState(path, pid) {
+  const processStartedAt = processStartMarker(pid)
+  if (!processStartedAt) throw new Error(`Could not record a launch identity for Router PID ${pid}.`)
+  writePrivateEnvFile(path, `${JSON.stringify({
+    schemaVersion: routerProcessStateSchemaVersion,
+    pid,
+    routerEntry: routerEntryPath,
+    processStartedAt,
+  }, null, 2)}\n`)
+}
+
+function removeRouterProcessState(path, expectedPid) {
+  if (!existsSync(path)) return false
+  const state = routerProcessState(path)
+  if (expectedPid !== undefined && state.pid !== expectedPid) return false
+  rmSync(path)
+  return true
+}
+
+function processIsRunning(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === 'EPERM') return true
+    return false
+  }
+}
+
+function processStartMarker(pid) {
+  if (process.platform === 'win32') {
+    const powershell = join(windowsSystemExecutable('WindowsPowerShell'), 'v1.0', 'powershell.exe')
+    const result = spawnSync(powershell, [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `$process = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($null -ne $process) { [Console]::Out.Write($process.StartTime.ToUniversalTime().ToString('o')) }`,
+    ], { encoding: 'utf8', windowsHide: true })
+    return result.status === 0 ? String(result.stdout || '').trim() : ''
+  }
+  const result = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' })
+  return result.status === 0 ? String(result.stdout || '').trim() : ''
+}
+
+const delay = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds))
+
+async function waitForProcessExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (processIsRunning(pid) && Date.now() < deadline) await delay(50)
+  return !processIsRunning(pid)
+}
+
+export async function stopRouterProcess(envFile) {
+  const statePath = defaultRouterProcessStatePath(envFile)
+  if (!existsSync(statePath)) return { stopped: false, statePath }
+  const state = routerProcessState(statePath)
+  if (!processIsRunning(state.pid)) {
+    removeRouterProcessState(statePath, state.pid)
+    return { stopped: false, stale: true, statePath, pid: state.pid }
+  }
+  const currentProcessStartedAt = processStartMarker(state.pid)
+  if (currentProcessStartedAt && currentProcessStartedAt !== state.processStartedAt) {
+    throw new Error(`Refusing to stop PID ${state.pid}: it does not match the Router launch identity recorded by this launcher.`)
+  }
+
+  let exited = false
+  try {
+    process.kill(state.pid, 'SIGTERM')
+    exited = await waitForProcessExit(state.pid, 1_500)
+  } catch (error) {
+    if (!processIsRunning(state.pid)) {
+      removeRouterProcessState(statePath, state.pid)
+      return { stopped: false, stale: true, statePath, pid: state.pid }
+    }
+    if (process.platform !== 'win32') throw error
+  }
+  if (!exited) {
+    if (process.platform === 'win32') {
+      const result = spawnSync(windowsSystemExecutable('taskkill.exe'), ['/pid', String(state.pid), '/t', '/f'], {
+        encoding: 'utf8',
+        windowsHide: true,
+      })
+      if (result.status !== 0 && processIsRunning(state.pid)) {
+        throw new Error(`Could not force-stop tracked Router PID ${state.pid}.`)
+      }
+    } else {
+      process.kill(state.pid, 'SIGKILL')
+    }
+    if (!await waitForProcessExit(state.pid, 1_500)) {
+      throw new Error(`Tracked Router PID ${state.pid} did not exit.`)
+    }
+  }
+  removeRouterProcessState(statePath, state.pid)
+  return { stopped: true, statePath, pid: state.pid }
+}
+
 function localProbeHost(host) {
   if (host === '0.0.0.0' || host === '') return '127.0.0.1'
   if (host === '::' || host === '[::]') return '::1'
@@ -436,6 +557,7 @@ function usage() {
     'Usage:',
     '  node router-local-env.mjs init [--router-env <path>] [--pairing-config <path>]',
     '  node router-local-env.mjs run [--router-env <path>] [--pairing-config <path>]',
+    '  node router-local-env.mjs stop [--router-env <path>]',
     '  node router-local-env.mjs rotate-approval-token [--router-env <path>] [--pairing-config <path>]',
     '  node router-local-env.mjs clear-approval-token [--router-env <path>] [--pairing-config <path>]',
     '  node router-local-env.mjs pair-gateway --installer <verified-installer-path> --request-id <pair-id> [--router <loopback-url>] [--source-base <Router package mirror>] [--router-env <path>] [--pairing-config <path>]',
@@ -443,6 +565,7 @@ function usage() {
     'Hermes Hub monorepo usage:',
     '  node apps/hermes-hub-server-router/router-local-env.mjs init [--router-env <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs run [--router-env <path>]',
+    '  node apps/hermes-hub-server-router/router-local-env.mjs stop [--router-env <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs rotate-approval-token [--router-env <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs clear-approval-token [--router-env <path>]',
     '  pnpm router:pair-gateway -- --installer <verified-installer-path> --request-id <pair-id> [--router <loopback-url>] [--source-base <Router package mirror>]',
@@ -454,18 +577,24 @@ function usage() {
 async function runRouter(cwd, envFile, options = {}) {
   const environment = loadRouterEnvFile(envFile, process.env, options)
   const tsxCli = join(cwd, 'node_modules', 'tsx', 'dist', 'cli.mjs')
-  const routerEntry = join(routerPackageRoot, 'src', 'bridgeServer.ts')
   if (!existsSync(tsxCli)) throw new Error('tsx is not installed. Run pnpm install first.')
-  if (!existsSync(routerEntry)) {
+  if (!existsSync(routerEntryPath)) {
     throw new Error(`Router source was not found beside ${fileURLToPath(import.meta.url)}.`)
   }
   await preflightRouterStart(environment)
-  const child = spawn(process.execPath, [tsxCli, routerEntry], {
+  const child = spawn(process.execPath, [tsxCli, routerEntryPath], {
     cwd,
     env: environment,
     stdio: 'inherit',
     windowsHide: true,
   })
+  const statePath = defaultRouterProcessStatePath(envFile)
+  try {
+    writeRouterProcessState(statePath, child.pid)
+  } catch (error) {
+    child.kill('SIGTERM')
+    throw error
+  }
   const forwardInterrupt = () => {
     if (!child.killed) child.kill('SIGINT')
   }
@@ -474,12 +603,17 @@ async function runRouter(cwd, envFile, options = {}) {
   }
   process.once('SIGINT', forwardInterrupt)
   process.once('SIGTERM', forwardTerminate)
-  const result = await new Promise((resolvePromise, reject) => {
-    child.once('error', reject)
-    child.once('exit', (code, signal) => resolvePromise({ code, signal }))
-  })
-  process.removeListener('SIGINT', forwardInterrupt)
-  process.removeListener('SIGTERM', forwardTerminate)
+  let result
+  try {
+    result = await new Promise((resolvePromise, reject) => {
+      child.once('error', reject)
+      child.once('exit', (code, signal) => resolvePromise({ code, signal }))
+    })
+  } finally {
+    process.removeListener('SIGINT', forwardInterrupt)
+    process.removeListener('SIGTERM', forwardTerminate)
+    removeRouterProcessState(statePath, child.pid)
+  }
   if (result.signal) process.kill(process.pid, result.signal)
   if (result.code !== 0) process.exitCode = result.code ?? 1
 }
@@ -515,6 +649,17 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         ? `Router approval token cleared from ${result.path}; run init or run to generate a new value.\n`
         : `Router environment at ${result.path} has no approval token to clear.\n`,
     )
+    return
+  }
+  if (command === 'stop') {
+    const result = await stopRouterProcess(envFile)
+    if (result.stopped) {
+      process.stdout.write(`Stopped tracked Router process ${result.pid}.\n`)
+    } else if (result.stale) {
+      process.stdout.write(`No tracked Router is running; removed stale process state for PID ${result.pid}.\n`)
+    } else {
+      process.stdout.write('No tracked Router process state was found.\n')
+    }
     return
   }
   if (command === 'pair-gateway') {

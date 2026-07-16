@@ -34,6 +34,7 @@ From the Hermes Hub monorepo root, use:
 ```bash
 pnpm router:init
 pnpm router:dev
+pnpm router:stop
 ```
 
 After verifying the Gateway installer from a local loopback pairing prompt,
@@ -57,6 +58,12 @@ reuse the existing value. Explicitly rotate it with
 value. Restart the Router after either action and provide the new
 value to later one-shot Gateway installer approvals. Never place the value in
 source, command arguments, logs, pairing prompts, or `.workspace/local.env`.
+Use `pnpm router:stop` to stop a Router launched by `router:dev`, including one
+started in the background. The launcher records its own child PID in a private
+state file beside the selected Router environment and, where the OS permits,
+verifies the PID still has the recorded launch identity before stopping it. It never
+guesses by port or kills an untracked process; a missing or stale state file is
+reported as an idempotent no-op.
 Managed Router installation creates the same secret in its private Router
 environment file; `--rotate-agent-approval-token` is the explicit managed
 rotation switch.

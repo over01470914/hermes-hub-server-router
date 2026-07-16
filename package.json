@@ -10,6 +10,7 @@
   "scripts": {
     "init:router": "node router-local-env.mjs init",
     "dev": "node router-local-env.mjs run",
+    "stop": "node router-local-env.mjs stop",
     "rotate-approval-token": "node router-local-env.mjs rotate-approval-token",
     "clear-approval-token": "node router-local-env.mjs clear-approval-token",
     "pair-gateway": "node router-local-env.mjs pair-gateway",
