@@ -2,6 +2,7 @@ import type {
   GatewayHeartbeatResult,
   GatewayRpcRequest,
   GatewayRpcResponse,
+  GatewayRuntimeSnapshot,
   GatewayState,
 } from './gatewayRegistry.js'
 import { GatewayRegistry } from './gatewayRegistry.js'
@@ -104,5 +105,24 @@ export class HermesGatewayRepository {
 
   async heartbeat(hermesAgentId?: string, timeoutMs = 3_000): Promise<GatewayHeartbeatResult> {
     return this.gateways.heartbeatByAgentId(hermesAgentId, timeoutMs)
+  }
+
+  async runtimeSnapshot(
+    hermesAgentId: string,
+    options: { sessionId?: string; timeoutMs?: number } = {},
+  ): Promise<GatewayRuntimeSnapshot> {
+    const gateway = this.requireOnline(hermesAgentId)
+    if (!gateway.capabilities?.includes('runtime.status')) {
+      throw gatewayUnavailable(
+        'Hermes Hub Gateway does not advertise required capability: runtime.status',
+        501,
+        'gateway_capability_unavailable',
+      )
+    }
+    return this.gateways.requestRuntimeSnapshotByAgentId(hermesAgentId, options)
+  }
+
+  cachedRuntimeSnapshot(hermesAgentId: string, sessionId?: string): GatewayRuntimeSnapshot | null {
+    return this.gateways.getRuntimeSnapshotByAgentId(hermesAgentId, sessionId)
   }
 }

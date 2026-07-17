@@ -143,3 +143,27 @@ export function bearerToken(header: string | string[] | undefined): string | nul
   if (!value || !value.startsWith('Bearer ')) return null
   return value.slice('Bearer '.length).trim() || null
 }
+
+const bridgeWebSocketProtocolPrefix = 'hermes-hub.bridge.bearer.'
+
+export function bridgeWebSocketProtocol(token: string): string {
+  const normalized = token.trim()
+  if (!normalized || !/^[A-Za-z0-9._-]+$/.test(normalized)) {
+    throw new Error('Bridge WebSocket token is invalid')
+  }
+  return `${bridgeWebSocketProtocolPrefix}${normalized}`
+}
+
+export function bridgeTokenFromWebSocketProtocol(
+  header: string | string[] | undefined,
+): string | null {
+  const values = (Array.isArray(header) ? header : [header || ''])
+    .flatMap(value => value.split(','))
+    .map(value => value.trim())
+    .filter(Boolean)
+  if (values.length !== 1) return null
+  const protocol = values[0]
+  if (!protocol.startsWith(bridgeWebSocketProtocolPrefix)) return null
+  const token = protocol.slice(bridgeWebSocketProtocolPrefix.length)
+  return token && /^[A-Za-z0-9._-]+$/.test(token) ? token : null
+}

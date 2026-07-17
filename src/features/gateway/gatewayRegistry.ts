@@ -99,6 +99,19 @@ export interface GatewayHeartbeatResult {
   error?: string
 }
 
+export interface GatewayRuntimeSnapshot {
+  eventId: string
+  hermesAgentId: string
+  gatewayId: string
+  scope: 'agent' | 'session'
+  sessionId?: string
+  laneId?: string
+  submissionId?: string
+  snapshot: Record<string, unknown>
+  receivedAt: number
+  stale: boolean
+}
+
 export interface GatewayActivationReservation {
   hermesAgentId: string
   gatewayId: string
@@ -138,6 +151,14 @@ interface PendingNative {
   promptId?: string
 }
 
+interface PendingRuntimeSnapshot {
+  resolve: (snapshot: GatewayRuntimeSnapshot) => void
+  reject: (error: Error) => void
+  timeout: NodeJS.Timeout
+  startedAt: number
+  sessionId?: string
+}
+
 interface TrackedGateway extends GatewayState {
   requestId: string
   user: string
@@ -146,6 +167,7 @@ interface TrackedGateway extends GatewayState {
   pending: Map<string, PendingRpc>
   pendingHeartbeats: Map<string, PendingHeartbeat>
   pendingNative: Map<string, PendingNative>
+  pendingRuntimeSnapshots: Map<string, PendingRuntimeSnapshot>
   helloTimeout?: NodeJS.Timeout
 }
 
@@ -174,6 +196,121 @@ function cleanRpcResponse(value: unknown): GatewayRpcResponse {
   const status = typeof input.status === 'number' && input.status >= 100 && input.status <= 599 ? input.status : 502
   const bodyBase64 = typeof input.bodyBase64 === 'string' ? input.bodyBase64 : ''
   return { status, headers: cleanHeaders(input.headers), bodyBase64 }
+}
+
+function safeRuntimeString(value: unknown, maximum = 240): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim()
+  if (!normalized || normalized.length > maximum || /[\r\n\0]/.test(normalized)) return undefined
+  return normalized
+}
+
+function safeRuntimeNumber(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > Number.MAX_SAFE_INTEGER) return undefined
+  return Math.floor(value)
+}
+
+function cleanRuntimeCategories(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return []
+  const categories: Record<string, unknown>[] = []
+  for (const rawCategory of value.slice(0, 16)) {
+    const category = asRecord(rawCategory)
+    if (!category) continue
+    const id = safeRuntimeString(category.id, 80)
+    const label = safeRuntimeString(category.label, 120)
+    const tokens = safeRuntimeNumber(category.tokens)
+    if (!id || !label || tokens === undefined) continue
+    categories.push({ id, label, tokens })
+  }
+  return categories
+}
+
+function cleanRuntimeSnapshot(
+  value: Record<string, unknown>,
+  state: Pick<TrackedGateway, 'gatewayId' | 'hermesAgentId'>,
+): GatewayRuntimeSnapshot {
+  if (value.gatewayId !== state.gatewayId || value.hermesAgentId !== state.hermesAgentId) {
+    throw new Error('Gateway runtime snapshot identity mismatch')
+  }
+  const rawSnapshot = asRecord(value.snapshot)
+  if (!rawSnapshot || rawSnapshot.object !== 'hermes.runtime.status' || rawSnapshot.version !== 1) {
+    throw new Error('Gateway runtime snapshot contract is invalid')
+  }
+  const scope = rawSnapshot.scope === 'agent' || rawSnapshot.scope === 'session' ? rawSnapshot.scope : undefined
+  if (!scope) throw new Error('Gateway runtime snapshot scope is invalid')
+  const snapshotSessionId = safeRuntimeString(rawSnapshot.session_id, 256)
+  const frameSessionId = safeRuntimeString(value.sessionId, 256)
+  if (scope === 'session' && (!snapshotSessionId || (frameSessionId && frameSessionId !== snapshotSessionId))) {
+    throw new Error('Gateway runtime snapshot session identity is invalid')
+  }
+  const model = safeRuntimeString(rawSnapshot.model, 240)
+  const provider = safeRuntimeString(rawSnapshot.provider, 120)
+  const revision = safeRuntimeString(rawSnapshot.revision, 160)
+  const status = safeRuntimeString(rawSnapshot.status, 80)
+  const source = safeRuntimeString(rawSnapshot.source, 120)
+  const context = asRecord(rawSnapshot.context) || {}
+  const usage = asRecord(rawSnapshot.usage) || {}
+  const compression = asRecord(rawSnapshot.compression) || {}
+  const contextUsed = safeRuntimeNumber(context.context_used ?? rawSnapshot.context_used)
+  const contextMax = safeRuntimeNumber(context.context_max ?? rawSnapshot.context_max)
+  const contextPercentRaw = context.context_percent ?? rawSnapshot.context_percent
+  const contextPercent = typeof contextPercentRaw === 'number' && Number.isFinite(contextPercentRaw)
+    ? Math.max(0, Math.min(100, contextPercentRaw))
+    : undefined
+  const cleanUsage: Record<string, unknown> = {}
+  for (const key of ['input_tokens', 'output_tokens', 'total_tokens', 'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens']) {
+    const number = safeRuntimeNumber(usage[key])
+    if (number !== undefined) cleanUsage[key] = number
+  }
+  const cleanContext: Record<string, unknown> = {
+    ...(contextUsed !== undefined ? { context_used: contextUsed } : {}),
+    ...(contextMax !== undefined ? { context_max: contextMax } : {}),
+    ...(contextPercent !== undefined ? { context_percent: contextPercent } : {}),
+    categories: cleanRuntimeCategories(context.categories),
+    accuracy: context.accuracy === 'exact' ? 'exact' : 'estimated',
+  }
+  const contextSource = safeRuntimeString(context.source, 120)
+  if (contextSource) cleanContext.source = contextSource
+  const cleanCompression: Record<string, unknown> = {}
+  const compressionStatus = safeRuntimeString(compression.status, 80)
+  const thresholdTokens = safeRuntimeNumber(compression.threshold_tokens)
+  if (compressionStatus) cleanCompression.status = compressionStatus
+  if (typeof compression.available === 'boolean') cleanCompression.available = compression.available
+  if (thresholdTokens !== undefined) cleanCompression.threshold_tokens = thresholdTokens
+  const cleanSnapshot: Record<string, unknown> = {
+    object: 'hermes.runtime.status',
+    version: 1,
+    scope,
+    ...(snapshotSessionId ? { session_id: snapshotSessionId } : {}),
+    ...(revision ? { revision } : {}),
+    observed_at: safeRuntimeNumber(rawSnapshot.observed_at) || Date.now(),
+    ...(model ? { model } : {}),
+    ...(provider ? { provider } : {}),
+    ...(status ? { status } : {}),
+    usage: cleanUsage,
+    context: cleanContext,
+    ...(contextUsed !== undefined ? { context_used: contextUsed } : {}),
+    ...(contextMax !== undefined ? { context_max: contextMax } : {}),
+    ...(contextPercent !== undefined ? { context_percent: contextPercent } : {}),
+    estimated: rawSnapshot.estimated !== false,
+    ...(source ? { source } : {}),
+    compression: cleanCompression,
+  }
+  const eventId = safeRuntimeString(value.eventId, 200) || `runtime_${randomUUID()}`
+  const laneId = safeRuntimeString(value.laneId, 200)
+  const submissionId = safeRuntimeString(value.submissionId, 200)
+  return {
+    eventId,
+    hermesAgentId: state.hermesAgentId,
+    gatewayId: state.gatewayId,
+    scope,
+    ...(snapshotSessionId ? { sessionId: snapshotSessionId } : {}),
+    ...(laneId ? { laneId } : {}),
+    ...(submissionId ? { submissionId } : {}),
+    snapshot: cleanSnapshot,
+    receivedAt: Date.now(),
+    stale: false,
+  }
 }
 
 const nativeSessionEvents = new Set([
@@ -301,6 +438,8 @@ function queryKeys(path: string): string[] {
 export class GatewayRegistry {
   private gateways = new Map<string, TrackedGateway>()
   private sessionEventHandler?: (event: GatewaySessionEvent) => boolean
+  private runtimeSnapshotHandler?: (snapshot: GatewayRuntimeSnapshot) => void
+  private readonly runtimeSnapshots = new Map<string, GatewayRuntimeSnapshot>()
 
   constructor(private readonly options: GatewayRegistryOptions = defaultRegistryOptions) {}
 
@@ -339,7 +478,8 @@ export class GatewayRegistry {
       socket,
       pending: new Map(),
       pendingHeartbeats: new Map(),
-      pendingNative: new Map()
+      pendingNative: new Map(),
+      pendingRuntimeSnapshots: new Map(),
     }
     this.gateways.set(record.gatewayId, state)
     logRouter('info', 'Gateway attached', {
@@ -370,6 +510,7 @@ export class GatewayRegistry {
         pendingRpc: state.pending.size,
         pendingHeartbeats: state.pendingHeartbeats.size,
         pendingNative: state.pendingNative.size,
+        pendingRuntimeSnapshots: state.pendingRuntimeSnapshots.size,
       })
       for (const [id, pending] of state.pending.entries()) {
         clearTimeout(pending.timeout)
@@ -387,6 +528,11 @@ export class GatewayRegistry {
           code: 'gateway_submission_ambiguous',
         }))
         state.pendingNative.delete(id)
+      }
+      for (const [id, pending] of state.pendingRuntimeSnapshots.entries()) {
+        clearTimeout(pending.timeout)
+        pending.reject(new Error(reason))
+        state.pendingRuntimeSnapshots.delete(id)
       }
       state.inFlightRpc = 0
     }
@@ -450,6 +596,58 @@ export class GatewayRegistry {
 
   setSessionEventHandler(handler: (event: GatewaySessionEvent) => boolean): void {
     this.sessionEventHandler = handler
+  }
+
+  setRuntimeSnapshotHandler(handler: (snapshot: GatewayRuntimeSnapshot) => void): void {
+    this.runtimeSnapshotHandler = handler
+  }
+
+  getRuntimeSnapshotByAgentId(hermesAgentId: string, sessionId?: string): GatewayRuntimeSnapshot | null {
+    const normalizedSessionId = sessionId?.trim()
+    const key = this.runtimeSnapshotKey(hermesAgentId, normalizedSessionId || undefined)
+    const snapshot = this.runtimeSnapshots.get(key)
+    if (!snapshot) return null
+    const stale = Date.now() - snapshot.receivedAt > 60_000
+    return { ...snapshot, stale }
+  }
+
+  async requestRuntimeSnapshotByAgentId(
+    hermesAgentId: string,
+    options: { sessionId?: string; timeoutMs?: number } = {},
+  ): Promise<GatewayRuntimeSnapshot> {
+    const state = this.gatewayForAgent(hermesAgentId)
+    if (!state?.socket || !state.online || state.socket.readyState !== 1) throw new Error('Gateway offline')
+    if (!state.capabilities?.includes('runtime.status')) {
+      throw Object.assign(new Error('Gateway does not advertise runtime.status'), { code: 'capability_unsupported' })
+    }
+    const sessionId = options.sessionId?.trim() || undefined
+    const timeoutMs = Math.max(1_000, Math.min(options.timeoutMs || 6_000, 30_000))
+    const id = `runtime_${randomUUID()}`
+    const startedAt = Date.now()
+    return new Promise<GatewayRuntimeSnapshot>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        state.pendingRuntimeSnapshots.delete(id)
+        logRouter('warn', 'Gateway runtime snapshot timed out', {
+          hermesAgentId,
+          requestId: id,
+          hasSession: Boolean(sessionId),
+          timeoutMs,
+          latencyMs: elapsedMs(startedAt),
+        })
+        reject(new Error('Gateway runtime snapshot timeout'))
+      }, timeoutMs)
+      state.pendingRuntimeSnapshots.set(id, { resolve, reject, timeout, startedAt, sessionId })
+      state.socket?.send(JSON.stringify({
+        type: 'runtime_snapshot_request',
+        id,
+        ...(sessionId ? { sessionId } : {}),
+      }), error => {
+        if (!error) return
+        clearTimeout(timeout)
+        state.pendingRuntimeSnapshots.delete(id)
+        reject(error)
+      })
+    })
   }
 
   get(gatewayId: string): GatewayState | null {
@@ -924,6 +1122,42 @@ export class GatewayRegistry {
       }
       return
     }
+    if (parsed.type === 'runtime_snapshot') {
+      try {
+        const snapshot = cleanRuntimeSnapshot(parsed, state)
+        this.runtimeSnapshots.set(
+          this.runtimeSnapshotKey(snapshot.hermesAgentId, snapshot.scope === 'session' ? snapshot.sessionId : undefined),
+          snapshot,
+        )
+        const requestId = typeof parsed.id === 'string' ? parsed.id : undefined
+        if (requestId) {
+          const pending = state.pendingRuntimeSnapshots.get(requestId)
+          if (pending) {
+            if (pending.sessionId && pending.sessionId !== snapshot.sessionId) {
+              throw new Error('Gateway runtime snapshot request session mismatch')
+            }
+            state.pendingRuntimeSnapshots.delete(requestId)
+            clearTimeout(pending.timeout)
+            pending.resolve(snapshot)
+          }
+        }
+        this.runtimeSnapshotHandler?.(snapshot)
+        logRouter('debug', 'Gateway runtime snapshot accepted', {
+          hermesAgentId: snapshot.hermesAgentId,
+          gatewayId: snapshot.gatewayId,
+          scope: snapshot.scope,
+          hasSession: Boolean(snapshot.sessionId),
+          revision: snapshot.snapshot.revision,
+        })
+      } catch (error) {
+        logRouter('warn', 'Gateway runtime snapshot rejected', {
+          hermesAgentId: state.hermesAgentId,
+          gatewayId: state.gatewayId,
+        }, error)
+        state.socket?.close(4400, 'invalid runtime snapshot')
+      }
+      return
+    }
     if (parsed.type === 'rpc_response' && typeof parsed.id === 'string') {
       const pending = state.pending.get(parsed.id)
       if (!pending) {
@@ -1110,6 +1344,10 @@ export class GatewayRegistry {
         const rightReady = right.online && right.socket?.readyState === 1 ? 1 : 0
         return rightReady - leftReady || right.connectedAt - left.connectedAt
       })[0]
+  }
+
+  private runtimeSnapshotKey(hermesAgentId: string, sessionId?: string): string {
+    return `${hermesAgentId}:${sessionId ? `session:${sessionId}` : 'agent'}`
   }
 
   private publicState(state: TrackedGateway): GatewayState {

@@ -32,7 +32,7 @@ class FakeGatewaySocket extends EventEmitter {
       runtime: 'hermes-hub-gateway',
       mode: 'native-session',
       protocols: ['hermes-hub-gateway-rpc/v2'],
-      capabilities: ['health', 'sessions', 'session.message', 'session.prompt-response'],
+      capabilities: ['health', 'sessions', 'session.message', 'session.prompt-response', 'runtime.status'],
     })
   }
 }
@@ -53,9 +53,13 @@ function attach(registry: GatewayRegistry, agentId: string, gatewayId: string): 
 
 const registry = new GatewayRegistry()
 const events: GatewaySessionEvent[] = []
+const runtimeSnapshots: string[] = []
 registry.setSessionEventHandler(event => {
   events.push(event)
   return event.hermesAgentId === 'agent_native_a' && event.laneId === 'lane_aaaaaaaa'
+})
+registry.setRuntimeSnapshotHandler(snapshot => {
+  runtimeSnapshots.push(snapshot.eventId)
 })
 const socketA = attach(registry, 'agent_native_a', 'gw_native_a')
 attach(registry, 'agent_native_b', 'gw_native_b')
@@ -113,6 +117,37 @@ socketA.receive({
 const acknowledged = await submission
 assert.equal(acknowledged.sessionId, 'session_native_a')
 
+const runtimePromise = registry.requestRuntimeSnapshotByAgentId('agent_native_a', {
+  sessionId: 'session_native_a',
+})
+const runtimeRequest = socketA.sent.find(frame => frame.type === 'runtime_snapshot_request')
+assert.ok(runtimeRequest)
+socketA.receive({
+  type: 'runtime_snapshot',
+  id: runtimeRequest.id,
+  gatewayId: 'gw_native_a',
+  hermesAgentId: 'agent_native_a',
+  sessionId: 'session_native_a',
+  laneId: 'lane_aaaaaaaa',
+  snapshot: {
+    object: 'hermes.runtime.status',
+    version: 1,
+    scope: 'session',
+    session_id: 'session_native_a',
+    model: 'model-a',
+    usage: { total_tokens: 48 },
+    context: { context_used: 48, accuracy: 'estimated' },
+    compression: { status: 'idle', available: false },
+    debug_prompt: 'must not cross the Router cache boundary',
+  },
+})
+const runtime = await runtimePromise
+assert.equal(runtime.sessionId, 'session_native_a')
+assert.equal(runtimeSnapshots.length, 1)
+assert.equal(runtime.snapshot.model, 'model-a')
+assert.equal('debug_prompt' in runtime.snapshot, false)
+assert.equal(registry.getRuntimeSnapshotByAgentId('agent_native_a', 'session_native_a')?.snapshot.model, 'model-a')
+
 const ambiguousSocket = attach(registry, 'agent_native_ambiguous', 'gw_native_ambiguous')
 const ambiguous = registry.submitSessionByAgentId('agent_native_ambiguous', {
   laneId: 'lane_bbbbbbbb',
@@ -132,6 +167,7 @@ console.log(JSON.stringify({
     'unsolicited native session events are accepted through the lane validator',
     'typed native message deltas preserve the Gateway connection',
     'native acknowledgement returns the Hermes session id',
+    'versioned runtime snapshots are requested separately, cached, and redacted by the Router',
     'Gateway disconnect produces an ambiguous result and no retry',
   ],
 }, null, 2))

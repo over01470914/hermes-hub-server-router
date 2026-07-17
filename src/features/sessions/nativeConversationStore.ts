@@ -169,6 +169,12 @@ export class NativeConversationStore {
     return this.lanes.get(this.laneKey(hermesAgentId, laneId))
   }
 
+  getBySessionId(hermesAgentId: string, sessionId: string): NativeConversationRecord | undefined {
+    return [...this.conversations.values()]
+      .filter(record => record.hermesAgentId === hermesAgentId && record.sessionId === sessionId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]
+  }
+
   getSubmission(hermesAgentId: string, submissionId: string): NativeSubmissionRecord | undefined {
     return this.submissions.get(this.submissionKey(hermesAgentId, submissionId))
   }

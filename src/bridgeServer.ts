@@ -10,7 +10,14 @@ import { errorMessage, logRouter, type RouterLogLevel } from './core/observabili
 import { readPrivateTextFileSync, writePrivateTextFileAtomicSync } from './core/persistence/privateStateFile.js'
 import { resolveRouterStatePaths } from './core/persistence/routerStatePaths.js'
 import { elapsedMs, encodeSseEvent, normalizeBootstrapQuery, requestId, sseHeaders, type GatewayRequestMetrics, type RpcStreamFrame } from './core/protocol/bridgeProtocol.js'
-import { readBridgeConfig, issueBridgeToken, verifyBridgeToken, bearerToken, type BridgeTokenPayload } from './core/security/bridgeAuth.js'
+import {
+  bearerToken,
+  bridgeTokenFromWebSocketProtocol,
+  issueBridgeToken,
+  readBridgeConfig,
+  type BridgeTokenPayload,
+  verifyBridgeToken,
+} from './core/security/bridgeAuth.js'
 import { requireGatewayBoundBridge } from './core/security/bridgePolicy.js'
 import { DiagnosticsPayloadError, normalizeDiagnosticsReceipt, summarizeDiagnosticsReceipt } from './features/diagnostics/diagnosticsReceipt.js'
 import {
@@ -196,6 +203,30 @@ gatewayRegistry.setSessionEventHandler(event => {
     data: event.data,
   })
   return true
+})
+
+gatewayRegistry.setRuntimeSnapshotHandler(snapshot => {
+  // Agent-wide snapshots are intentionally cache-only: a Bridge event must
+  // always resolve to a client conversation, while the Router's cache can
+  // still seed a later status/bootstrap read without inventing one.
+  if (snapshot.scope !== 'session' || !snapshot.sessionId) return
+  const conversation = snapshot.laneId
+    ? nativeConversationStore.acceptSessionEvent(
+      snapshot.hermesAgentId,
+      snapshot.laneId,
+      snapshot.sessionId,
+    )
+    : nativeConversationStore.getBySessionId(snapshot.hermesAgentId, snapshot.sessionId)
+  if (!conversation) return
+  clientEventHub.publish({
+    scope: `hermes-agent:${snapshot.hermesAgentId}`,
+    eventId: snapshot.eventId,
+    conversationId: conversation.conversationId,
+    sessionId: snapshot.sessionId,
+    submissionId: snapshot.submissionId,
+    event: 'runtime.snapshot',
+    data: snapshot.snapshot,
+  })
 })
 
 type ProxiedHermesResponse = Awaited<ReturnType<typeof proxyViaGateway>>
@@ -668,6 +699,13 @@ function commandDispatchGatewayRequest(input: Record<string, unknown>): { method
 
 function requirePayload(request: IncomingMessage) {
   const token = bearerToken(request.headers.authorization)
+  if (!token) throw new Error('Missing bridge token')
+  return verifyBridgeToken(token, config)
+}
+
+function requireRealtimePayload(request: IncomingMessage) {
+  const token = bearerToken(request.headers.authorization) ||
+    bridgeTokenFromWebSocketProtocol(request.headers['sec-websocket-protocol'])
   if (!token) throw new Error('Missing bridge token')
   return verifyBridgeToken(token, config)
 }
@@ -2120,9 +2158,34 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return
   }
 
-  const sessionActionMatch = pathname.match(/^\/bridge\/sessions\/([^/]+)\/(raw|messages|rename|fork|metadata|model|usage|context|archive|delete)$/)
+  const sessionActionMatch = pathname.match(/^\/bridge\/sessions\/([^/]+)\/(raw|messages|rename|fork|metadata|model|usage|context|runtime|archive|delete)$/)
   if (sessionActionMatch && request.method === 'GET' && sessionActionMatch[2] === 'raw') {
     await handleBridgeRawSession(request, response, payload, url, sessionActionMatch[1])
+    return
+  }
+
+  if (sessionActionMatch && request.method === 'GET' && sessionActionMatch[2] === 'runtime') {
+    const clientSessionId = decodeURIComponent(sessionActionMatch[1])
+    const hermesSessionId = sessionReadTarget(payload.hermesAgentId, clientSessionId)
+    const refresh = url.searchParams.get('refresh') === '1'
+    let snapshot = refresh
+      ? null
+      : hermesGateways.cachedRuntimeSnapshot(payload.hermesAgentId, hermesSessionId)
+    if (!snapshot || refresh) {
+      snapshot = await hermesGateways.runtimeSnapshot(payload.hermesAgentId, {
+        sessionId: hermesSessionId,
+        timeoutMs: 6_000,
+      })
+    }
+    sendJson(response, 200, {
+      ...snapshot.snapshot,
+      session_id: clientSessionId,
+      hermes_session_id: hermesSessionId,
+      cache: {
+        stale: snapshot.stale,
+        received_at: snapshot.receivedAt,
+      },
+    })
     return
   }
 
@@ -2217,7 +2280,11 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       offset,
       limit
     })
-    const proxied = await proxyViaGateway(payload, `api/sessions/${sessionId}/messages`, { sourceHeaders: request.headers })
+    const proxied = await proxyViaGateway(
+      payload,
+      `api/sessions/${sessionId}/messages?offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(limit)}`,
+      { sourceHeaders: request.headers },
+    )
     logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge messages received', {
       ...proxiedLogContext(proxied, undefined, startedAt),
       sessionId: decodeURIComponent(sessionActionMatch[1]),
@@ -2296,6 +2363,26 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return
   }
 
+  if (pathname === '/bridge/hermes/runtime' && request.method === 'GET') {
+    const refresh = url.searchParams.get('refresh') === '1'
+    let snapshot = refresh
+      ? null
+      : hermesGateways.cachedRuntimeSnapshot(payload.hermesAgentId)
+    if (!snapshot || refresh) {
+      snapshot = await hermesGateways.runtimeSnapshot(payload.hermesAgentId, {
+        timeoutMs: 6_000,
+      })
+    }
+    sendJson(response, 200, {
+      ...snapshot.snapshot,
+      cache: {
+        stale: snapshot.stale,
+        received_at: snapshot.receivedAt,
+      },
+    })
+    return
+  }
+
   if (pathname === '/bridge/hermes/model-context' && request.method === 'GET') {
     sendUnsupportedGatewayOperation(response, 'global model context')
     return
@@ -2338,7 +2425,7 @@ server.on('upgrade', (request, socket, head) => {
   const { pathname, url } = getPath(request)
   if (pathname === '/bridge/events') {
     try {
-      const payload = requirePayload(request)
+      const payload = requireRealtimePayload(request)
       const clientId = bridgeClientId(request, url)
       const afterValue = url.searchParams.get('after')
       const afterCursor = afterValue == null || afterValue.trim() === ''

@@ -7,6 +7,13 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { WebSocket } from 'ws'
+
+import {
+  bridgeWebSocketProtocol,
+  issueBridgeToken,
+  readBridgeConfig,
+} from '../../core/security/bridgeAuth.js'
 
 const delay = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds))
 
@@ -131,7 +138,7 @@ const workdir = await mkdtemp(join(tmpdir(), 'hermes-hub-pairing-security-'))
 const pairingStorePath = join(workdir, 'state', 'pairing-store.json')
 const localApprovalConfigPath = join(workdir, 'hermes-home', 'hermes-hub', 'pairing.json')
 const baseUrl = `http://127.0.0.1:${port}`
-const router = startRouter(repositoryRoot, routerPackageRoot, {
+const routerEnvironment: NodeJS.ProcessEnv = {
   ...process.env,
   NODE_ENV: 'development',
   HERMES_HUB_ROUTER_HOST: '127.0.0.1',
@@ -145,10 +152,38 @@ const router = startRouter(repositoryRoot, routerPackageRoot, {
   HERMES_HUB_SESSION_METADATA_STORE_PATH: join(workdir, 'session-metadata.json'),
   HERMES_HUB_DIAGNOSTICS_DIR: join(workdir, 'diagnostics'),
   HERMES_HUB_LOG_LEVEL: 'error',
-})
+}
+const router = startRouter(repositoryRoot, routerPackageRoot, routerEnvironment)
 
 try {
   await waitForRouter(baseUrl, router)
+
+  const browserBridgeToken = issueBridgeToken({
+    pairingCode: '00000000',
+    user: 'browser-realtime-smoke',
+    deviceId: 'browser-realtime-smoke-device',
+    hermesAgentId: 'browser-realtime-smoke-agent',
+  }, readBridgeConfig(routerEnvironment))
+  const browserRealtime = new WebSocket(
+    `${baseUrl.replace(/^http/, 'ws')}/bridge/events`,
+    bridgeWebSocketProtocol(browserBridgeToken),
+    { headers: { 'x-hermes-hub-client-id': 'browser-realtime-smoke' } },
+  )
+  const browserRealtimeOpened = once(browserRealtime, 'open')
+  const browserRealtimeReady = once(browserRealtime, 'message')
+  await browserRealtimeOpened
+  const [browserRealtimeData] = await browserRealtimeReady
+  const browserRealtimeFrame = JSON.parse(String(browserRealtimeData)) as {
+    type?: string
+    version?: number
+  }
+  assert.deepEqual(
+    { type: browserRealtimeFrame.type, version: browserRealtimeFrame.version },
+    { type: 'bridge.ready', version: 2 },
+  )
+  const browserRealtimeClosed = once(browserRealtime, 'close')
+  browserRealtime.close()
+  await browserRealtimeClosed
 
   const browserOriginBootstrap = await fetch(`${baseUrl}/router/pairing/local-approval-bootstrap`, {
     method: 'POST',
@@ -227,6 +262,7 @@ try {
       'pairing claim requires requestId and performs no code-only record scan',
       'claim and request limits return 429 with Retry-After',
       'X-Forwarded-For cannot evade direct TCP peer limits',
+      'browser realtime authenticates with a WebSocket subprotocol instead of a token query',
       process.platform === 'win32'
         ? 'Router pairing store has a verified private Windows DACL'
         : 'Router pairing store uses verified 0700/0600 POSIX modes',

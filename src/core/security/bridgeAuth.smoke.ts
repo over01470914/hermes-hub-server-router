@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 
-import { issueBridgeToken, readBridgeConfig, verifyBridgeToken } from './bridgeAuth.js'
+import {
+  bridgeTokenFromWebSocketProtocol,
+  bridgeWebSocketProtocol,
+  issueBridgeToken,
+  readBridgeConfig,
+  verifyBridgeToken,
+} from './bridgeAuth.js'
 
 const baseEnvironment = {
   NODE_ENV: 'production',
@@ -18,6 +24,10 @@ const input = {
 const permanentConfig = readBridgeConfig(baseEnvironment)
 assert.equal(permanentConfig.tokenTtlSeconds, 0, 'the default token TTL must be non-expiring')
 const permanentToken = issueBridgeToken(input, permanentConfig, 1_000, 'bridge_auth_permanent')
+const browserProtocol = bridgeWebSocketProtocol(permanentToken)
+assert.equal(bridgeTokenFromWebSocketProtocol(browserProtocol), permanentToken)
+assert.equal(bridgeTokenFromWebSocketProtocol(`unrelated, ${browserProtocol}`), null)
+assert.equal(bridgeTokenFromWebSocketProtocol(`${browserProtocol}, ${browserProtocol}`), null)
 assert.equal(
   verifyBridgeToken(permanentToken, permanentConfig, 9_999_999).exp,
   0,
@@ -41,5 +51,6 @@ console.log(JSON.stringify({
   checks: [
     'default bridge tokens do not expire',
     'configured positive bridge token TTLs still expire',
+    'browser WebSocket auth extracts one bearer subprotocol without using a URL query',
   ],
 }, null, 2))
