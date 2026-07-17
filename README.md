@@ -79,7 +79,7 @@ provisional, active, and revoked states. A provisional Gateway cannot carry
 existing Agent traffic until claim atomically promotes its exact connection.
 
 GitHub publishes agent-facing skills. npm publishes
-`@over01470914/hermes-hub-gateway@0.4.0`, including the manifest-verified
+`@over01470914/hermes-hub-gateway@0.4.1`, including the manifest-verified
 runtime and deterministic pairing core. `/router/health` publishes the package
 name, version, and runtime manifest SHA-256. The Router does not serve
 executable Gateway runtime files.

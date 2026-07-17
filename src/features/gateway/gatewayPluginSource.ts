@@ -8,8 +8,8 @@ export const gatewayPluginRepositoryUrl =
 
 export const gatewayPluginNpmPackage = Object.freeze({
   name: '@over01470914/hermes-hub-gateway',
-  version: '0.4.0',
-  runtimeManifestSha256: '7d146c5b701928f05a2e2754c25b845e3cf99b2b7970878342354ee38213d30a',
+  version: '0.4.1',
+  runtimeManifestSha256: '019817f83fef04d10181cbb0f83837405578557fbb2e74cb0a2eba125264703f',
 })
 
 export const gatewayPluginReleaseArtifact = Object.freeze({
