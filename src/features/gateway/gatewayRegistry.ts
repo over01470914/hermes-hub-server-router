@@ -179,13 +179,47 @@ function cleanRpcResponse(value: unknown): GatewayRpcResponse {
 const nativeSessionEvents = new Set([
   'message.created',
   'message.updated',
+  'message.start',
+  'message.delta',
+  'message.complete',
+  'assistant.delta',
   'processing.started',
   'processing.completed',
   'prompt.requested',
   'prompt.resolved',
   'session.resync_required',
+  'reasoning',
+  'reasoning.delta',
+  'reasoning.available',
+  'thinking.delta',
+  'text',
+  'status',
+  'status.update',
+  'usage.updated',
+  'gateway.ready',
+  'clarify.request',
+  'clarify.requested',
+  'approval.request',
+  'sudo.request',
+  'secret.request',
+  'interrupted',
+  'done',
+  'session.end',
   'error',
 ])
+
+const nativeSessionEventPrefixes = [
+  'tool.',
+  'terminal.',
+  'response.',
+]
+
+function isNativeSessionEvent(event: unknown): event is string {
+  if (typeof event !== 'string' || event.length === 0 || event.length > 160) {
+    return false
+  }
+  return nativeSessionEvents.has(event) || nativeSessionEventPrefixes.some(prefix => event.startsWith(prefix))
+}
 
 function cleanNativeAck(value: Record<string, unknown>, pending: PendingNative): GatewayNativeAck {
   if (value.requestType !== pending.requestType || typeof value.accepted !== 'boolean') {
@@ -227,9 +261,7 @@ function cleanSessionEvent(
   const laneId = typeof value.laneId === 'string' && /^lane_[A-Za-z0-9._:-]{8,191}$/.test(value.laneId)
     ? value.laneId
     : ''
-  const event = typeof value.event === 'string' && nativeSessionEvents.has(value.event)
-    ? value.event
-    : ''
+  const event = isNativeSessionEvent(value.event) ? value.event : ''
   const data = asRecord(value.data)
   if (!eventId || !laneId || !event || !data) {
     throw new Error('Gateway session event shape is invalid')

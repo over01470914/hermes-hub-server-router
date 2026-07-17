@@ -2352,7 +2352,7 @@ server.on('upgrade', (request, socket, head) => {
           scope: bridgeClientEventScope(payload),
           clientId,
           afterCursor,
-          expiresAtMs: payload.exp * 1000
+          expiresAtMs: payload.exp > 0 ? payload.exp * 1000 : undefined
         })
         logRouter('info', 'Client realtime WebSocket connected', {
           clientId,

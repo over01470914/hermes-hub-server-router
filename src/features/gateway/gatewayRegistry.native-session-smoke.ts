@@ -86,6 +86,22 @@ socketA.receive({
 assert.equal(events.length, 1)
 
 socketA.receive({
+  type: 'session_event',
+  eventId: 'evt_delta_aaaaaaaa',
+  gatewayId: 'gw_native_a',
+  hermesAgentId: 'agent_native_a',
+  laneId: 'lane_aaaaaaaa',
+  sessionId: 'session_native_a',
+  submissionId: 'sub_aaaaaaaa',
+  event: 'message.delta',
+  data: { delta: 'typed live content' },
+  sentAt: Date.now(),
+})
+assert.equal(events.length, 2)
+assert.equal(events[1]?.event, 'message.delta')
+assert.equal(socketA.readyState, 1)
+
+socketA.receive({
   type: 'session_submit_ack',
   id: sent.id,
   requestType: 'session_submit',
@@ -114,6 +130,7 @@ console.log(JSON.stringify({
   checks: [
     'native submission is routed only to the selected Agent Gateway',
     'unsolicited native session events are accepted through the lane validator',
+    'typed native message deltas preserve the Gateway connection',
     'native acknowledgement returns the Hermes session id',
     'Gateway disconnect produces an ambiguous result and no retry',
   ],

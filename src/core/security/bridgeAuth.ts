@@ -70,7 +70,9 @@ export function readBridgeConfig(env: NodeJS.ProcessEnv = process.env): BridgeRu
   return {
     pairingCode: pairingCode || 'dev-pairing-code',
     secret: bridgeSecret || 'dev-only-hermes-hub-bridge-secret-change-me',
-    tokenTtlSeconds: Number(env.HERMES_HUB_TOKEN_TTL_SECONDS || 60 * 60 * 24 * 7),
+    // A non-positive TTL intentionally creates a non-expiring token. Operators
+    // can still opt into expiry by setting HERMES_HUB_TOKEN_TTL_SECONDS.
+    tokenTtlSeconds: Number(env.HERMES_HUB_TOKEN_TTL_SECONDS || 0),
     insecureDevDefaults,
   }
 }
@@ -96,7 +98,7 @@ export function issueBridgeToken(
     hermesAgentId,
     jti,
     iat: now,
-    exp: now + config.tokenTtlSeconds,
+    exp: config.tokenTtlSeconds > 0 ? now + config.tokenTtlSeconds : 0,
     ...(capabilities.length ? { capabilities } : {}),
   }
   const header = { alg: 'HS256', typ: 'JWT' }
@@ -115,7 +117,10 @@ export function verifyBridgeToken(
   const expected = sign(`${header}.${payload}`, config.secret)
   if (!safeEqual(signature, expected)) throw new Error('Invalid token signature')
   const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Partial<BridgeTokenPayload>
-  if (!parsed.exp || parsed.exp < now) throw new Error('Token expired')
+  if (typeof parsed.exp !== 'number' || !Number.isFinite(parsed.exp)) {
+    throw new Error('Token expiry invalid')
+  }
+  if (parsed.exp > 0 && parsed.exp < now) throw new Error('Token expired')
   const deviceId = requiredId(parsed.deviceId, 'Token device id')
   const hermesAgentId = requiredId(parsed.hermesAgentId, 'Token Hermes Agent id')
   const jti = requiredId(parsed.jti, 'Token id', 200)
