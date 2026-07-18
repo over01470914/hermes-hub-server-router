@@ -208,6 +208,76 @@ try {
   assert.equal(localApproval.approvalToken, 'pairing-security-smoke-approval-' + 'x'.repeat(32))
   await assertPrivateStore(localApprovalConfigPath)
 
+  const enrollmentRequestResponse = await fetch(`${baseUrl}/router/pairing/request`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'device_enrollment_ticket' }),
+  })
+  assert.equal(enrollmentRequestResponse.status, 200)
+  const enrollmentRequest = await enrollmentRequestResponse.json() as { requestId: string; prompt: string }
+  const enrollmentTicket = enrollmentRequest.prompt.match(/--enrollment-ticket "([^"]+)"/)?.[1] || ''
+  assert.match(enrollmentTicket, /^enr_[a-f0-9]{32}\.[A-Za-z0-9_-]{43}$/)
+
+  const browserEnrollment = await fetch(`${baseUrl}/router/pairing/enroll`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      origin: 'https://untrusted.example.test',
+      'x-hermes-hub-gateway-enrollment': enrollmentTicket,
+    },
+    body: JSON.stringify({
+      requestId: enrollmentRequest.requestId,
+      hermesAgentId: 'agent_enrollment_smoke',
+      gatewayId: 'gw_enrollment_smoke',
+      gatewayToken: 'gateway-enrollment-smoke-' + 'x'.repeat(32),
+    }),
+  })
+  assert.equal(browserEnrollment.status, 403)
+
+  const enrolledGatewayToken = 'gateway-enrollment-smoke-' + 'x'.repeat(32)
+  const enrollmentResponse = await fetch(`${baseUrl}/router/pairing/enroll`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-hermes-hub-gateway-enrollment': enrollmentTicket,
+    },
+    body: JSON.stringify({
+      requestId: enrollmentRequest.requestId,
+      hermesAgentId: 'agent_enrollment_smoke',
+      gatewayId: 'gw_enrollment_smoke',
+      gatewayToken: enrolledGatewayToken,
+    }),
+  })
+  assert.equal(enrollmentResponse.status, 200)
+  const enrollment = await enrollmentResponse.json() as { randomCode?: string; gatewayToken?: string }
+  assert.match(enrollment.randomCode || '', /^\d{8}$/)
+  assert.equal(enrollment.gatewayToken, undefined)
+
+  const gatewayStatus = await fetch(`${baseUrl}/router/pairing/${encodeURIComponent(enrollmentRequest.requestId)}/gateway-status`, {
+    headers: {
+      authorization: `Bearer ${enrolledGatewayToken}`,
+      'x-hermes-hub-gateway-id': 'gw_enrollment_smoke',
+    },
+  })
+  assert.equal(gatewayStatus.status, 200)
+  assert.equal((await gatewayStatus.json() as { gatewayCredentialState?: string }).gatewayCredentialState, 'provisional')
+
+  const reusedEnrollment = await fetch(`${baseUrl}/router/pairing/enroll`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-hermes-hub-gateway-enrollment': enrollmentTicket,
+    },
+    body: JSON.stringify({
+      requestId: enrollmentRequest.requestId,
+      hermesAgentId: 'agent_enrollment_smoke',
+      gatewayId: 'gw_enrollment_smoke',
+      gatewayToken: enrolledGatewayToken,
+    }),
+  })
+  assert.notEqual(reusedEnrollment.status, 200)
+  assert.equal((await readFile(pairingStorePath, 'utf8')).includes(enrollmentTicket), false)
+
   const missingRequestId = await fetch(`${baseUrl}/router/pairing/claim`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -232,7 +302,7 @@ try {
   assert.equal(limitedClaim.status, 429)
   assert.ok(Number(limitedClaim.headers.get('retry-after')) > 0)
 
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
     const response = await fetch(`${baseUrl}/router/pairing/request`, {
       method: 'POST',
       headers: {
@@ -263,6 +333,7 @@ try {
       'claim and request limits return 429 with Retry-After',
       'X-Forwarded-For cannot evade direct TCP peer limits',
       'browser realtime authenticates with a WebSocket subprotocol instead of a token query',
+      'remote Gateway enrollment consumes a one-time ticket without receiving the Router approval token',
       process.platform === 'win32'
         ? 'Router pairing store has a verified private Windows DACL'
         : 'Router pairing store uses verified 0700/0600 POSIX modes',

@@ -467,7 +467,7 @@ function loopbackRouterUrl(value) {
   const host = url.hostname.toLowerCase()
   const isLoopback = host === '::1' || host === 'localhost' || /^127(?:\.\d{1,3}){3}$/.test(host)
   if (!isLoopback || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) {
-    throw new Error('The local Gateway launcher only sends Router approval to an HTTP(S) loopback Router URL.')
+    throw new Error('The local Gateway launcher only targets an HTTP(S) loopback Router URL.')
   }
   return url.toString().replace(/\/$/, '')
 }
@@ -500,6 +500,10 @@ export async function runApprovedGatewayInstaller(options = {}) {
   if (!/^pair_[A-Za-z0-9_-]{8,160}$/.test(requestId)) {
     throw new Error('pair-gateway requires a valid --request-id <pair-id>.')
   }
+  const enrollmentTicket = typeof options.enrollmentTicket === 'string' ? options.enrollmentTicket.trim() : ''
+  if (!/^enr_[a-f0-9]{32}\.[A-Za-z0-9_-]{43}$/.test(enrollmentTicket)) {
+    throw new Error('pair-gateway requires a valid --enrollment-ticket <ticket>.')
+  }
   hardenPrivateEnvFile(envFile, options)
   const environment = loadRouterEnvFile(envFile, options.baseEnvironment || process.env, options)
   const approvalToken = environment[approvalTokenKey]
@@ -512,13 +516,15 @@ export async function runApprovedGatewayInstaller(options = {}) {
       : environment.HERMES_HUB_ROUTER_URL || 'http://127.0.0.1:4320',
   )
   const sourceBase = localRouterPackageSourceBase(options.sourceBase, routerUrl)
-  const childArgs = [installer, '--router', routerUrl, '--request-id', requestId]
+  const childArgs = [installer, '--router', routerUrl, '--request-id', requestId, '--enrollment-ticket', enrollmentTicket]
   if (sourceBase) {
     childArgs.push('--source-base', sourceBase)
   }
+  const childEnvironment = { ...environment }
+  delete childEnvironment[approvalTokenKey]
   const child = (options.spawnImpl || spawn)(process.execPath, childArgs, {
     cwd: dirname(installer),
-    env: environment,
+    env: childEnvironment,
     stdio: options.stdio || 'inherit',
     windowsHide: true,
   })
@@ -601,7 +607,7 @@ function usage() {
     '  node router-local-env.mjs stop [--router-env <path>] [--pairing-config <path>]',
     '  node router-local-env.mjs rotate-approval-token [--router-env <path>] [--pairing-config <path>]',
     '  node router-local-env.mjs clear-approval-token [--router-env <path>] [--pairing-config <path>]',
-    '  node router-local-env.mjs pair-gateway --installer <verified-installer-path> --request-id <pair-id> [--router <loopback-url>] [--source-base <Router package mirror>] [--router-env <path>] [--pairing-config <path>]',
+    '  node router-local-env.mjs pair-gateway --installer <verified-installer-path> --request-id <pair-id> --enrollment-ticket <ticket> [--router <loopback-url>] [--source-base <Router package mirror>] [--router-env <path>] [--pairing-config <path>]',
     '',
     'Hermes Hub monorepo usage:',
     '  node apps/hermes-hub-server-router/router-local-env.mjs init [--router-env <path>]',
@@ -609,7 +615,7 @@ function usage() {
     '  node apps/hermes-hub-server-router/router-local-env.mjs stop [--router-env <path>] [--pairing-config <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs rotate-approval-token [--router-env <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs clear-approval-token [--router-env <path>]',
-    '  pnpm router:pair-gateway -- --installer <verified-installer-path> --request-id <pair-id> [--router <loopback-url>] [--source-base <Router package mirror>]',
+    '  pnpm router:pair-gateway -- --installer <verified-installer-path> --request-id <pair-id> --enrollment-ticket <ticket> [--router <loopback-url>] [--source-base <Router package mirror>]',
     '',
     'The token is generated once, never printed, and rotated or cleared only by explicit local commands.',
   ].join('\n')
@@ -712,10 +718,11 @@ export async function main(argv = process.argv.slice(2), options = {}) {
       envFile,
       installer: textOption(parsed, 'installer'),
       requestId: textOption(parsed, 'request-id'),
+      enrollmentTicket: textOption(parsed, 'enrollment-ticket'),
       routerUrl: textOption(parsed, 'router'),
       sourceBase: textOption(parsed, 'source-base'),
     })
-    process.stdout.write(`Gateway installer completed for ${result.requestId}; Router approval token was not printed.\n`)
+    process.stdout.write(`Gateway installer completed for ${result.requestId}; Router approval token was not passed to Gateway.\n`)
     return
   }
   if (command === 'run') {

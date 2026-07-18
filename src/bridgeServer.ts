@@ -1880,6 +1880,43 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
     return true
   }
 
+  if (pathname === '/router/pairing/enroll' && request.method === 'POST') {
+    // Remote Gateways receive only a short-lived, request-bound enrollment
+    // capability. Browser callers and the long-lived Router operator token are
+    // deliberately excluded from this path.
+    if (headerValue(request, 'origin')) {
+      throw Object.assign(new Error('Gateway enrollment is not available to browser origins'), {
+        statusCode: 403,
+        code: 'gateway_enrollment_browser_forbidden',
+      })
+    }
+    assertPairingRateAllowed(request, 'request')
+    const input = await readJson(request)
+    const enrollmentTicket = headerValue(request, 'x-hermes-hub-gateway-enrollment')
+    const requestId = typeof input.requestId === 'string' ? input.requestId : ''
+    const approval = pairingStore.enroll(requestId, enrollmentTicket, {
+      hermesAgentId: typeof input.hermesAgentId === 'string' ? input.hermesAgentId : undefined,
+      gatewayId: typeof input.gatewayId === 'string' ? input.gatewayId : undefined,
+      gatewayToken: typeof input.gatewayToken === 'string' ? input.gatewayToken : undefined,
+    })
+    logRouter('info', 'Gateway enrollment accepted', {
+      requestId: approval.requestId,
+      hermesAgentId: approval.hermesAgentId,
+      gatewayId: approval.gatewayId,
+      expiresAt: approval.expiresAt,
+    })
+    sendJson(response, 200, {
+      requestId: approval.requestId,
+      randomCode: approval.randomCode,
+      expiresAt: approval.expiresAt,
+      hermesAgentId: approval.hermesAgentId,
+      gatewayId: approval.gatewayId,
+      gatewayStreamPath: approval.gatewayStreamPath,
+      messageForUser: approval.randomCode,
+    })
+    return true
+  }
+
   if (pathname === '/router/pairing/claim' && request.method === 'POST') {
     assertPairingRateAllowed(request, 'claim')
     const input = await readJson(request)
@@ -1950,6 +1987,30 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
       requestId: claimed.requestId,
       user: claimed.user,
       status: 'paired'
+    })
+    return true
+  }
+
+  const pairingGatewayStatusMatch = pathname.match(/^\/router\/pairing\/([^/]+)\/gateway-status$/)
+  if (pairingGatewayStatusMatch && request.method === 'GET') {
+    const requestId = decodeURIComponent(pairingGatewayStatusMatch[1])
+    const gatewayId = headerValue(request, 'x-hermes-hub-gateway-id')
+    const token = bearerToken(request.headers.authorization) || ''
+    const record = pairingStore.verifyPairingGateway(requestId, gatewayId, token)
+    const gateway = gatewayRegistry.get(gatewayId)
+    const matchingGateway = gateway?.hermesAgentId === record.hermesAgentId ? gateway : undefined
+    const expired = record.expiresAt < Math.floor(Date.now() / 1000)
+    sendJson(response, 200, {
+      requestId,
+      hermesAgentId: record.hermesAgentId,
+      gatewayId: record.gatewayId,
+      expiresAt: record.expiresAt,
+      gatewayCredentialState: expired && record.gatewayCredentialState === 'provisional'
+        ? 'expired'
+        : record.gatewayCredentialState || 'pending',
+      online: Boolean(matchingGateway?.online),
+      connectedAt: matchingGateway?.connectedAt,
+      protocols: matchingGateway?.protocols || [],
     })
     return true
   }

@@ -276,6 +276,7 @@ try {
     '--router', 'http://127.0.0.1:4320',
     '--source-base', 'http://127.0.0.1:4320/apps/hermes-hub-gateway-plugin/',
     '--request-id', 'pair_gateway_launcher_smoke',
+    '--enrollment-ticket', `enr_${'a'.repeat(32)}.${'b'.repeat(43)}`,
   ], {
     cwd: workdir,
     encoding: 'utf8',
@@ -284,10 +285,11 @@ try {
   })
   assert.equal(launchedInstaller.status, 0)
   const installerLaunch = JSON.parse(readFileSync(installerReceipt, 'utf8'))
-  assert.equal(installerLaunch.approvalTokenLength, regeneratedCliToken.length)
+  assert.equal(installerLaunch.approvalTokenLength, 0)
   assert.deepEqual(installerLaunch.args, [
     '--router', 'http://127.0.0.1:4320',
     '--request-id', 'pair_gateway_launcher_smoke',
+    '--enrollment-ticket', `enr_${'a'.repeat(32)}.${'b'.repeat(43)}`,
     '--source-base', 'http://127.0.0.1:4320/apps/hermes-hub-gateway-plugin/',
   ])
   assert.equal(launchedInstaller.stdout.includes(regeneratedCliToken), false)
@@ -300,13 +302,14 @@ try {
     '--installer', verifiedInstaller,
     '--router', 'https://router.example.test',
     '--request-id', 'pair_gateway_launcher_smoke',
+    '--enrollment-ticket', `enr_${'a'.repeat(32)}.${'b'.repeat(43)}`,
   ], {
     cwd: workdir,
     encoding: 'utf8',
     windowsHide: true,
   })
   assert.notEqual(remoteLauncher.status, 0)
-  assert.match(remoteLauncher.stderr, /only sends Router approval to an HTTP\(S\) loopback Router URL/)
+  assert.match(remoteLauncher.stderr, /only targets an HTTP\(S\) loopback Router URL/)
   assert.equal(remoteLauncher.stdout.includes(regeneratedCliToken), false)
   assert.equal(remoteLauncher.stderr.includes(regeneratedCliToken), false)
   const wrongMirror = spawnSync(process.execPath, [
@@ -318,6 +321,7 @@ try {
     '--router', 'http://127.0.0.1:4320',
     '--source-base', 'http://127.0.0.1:4320/untrusted-package/',
     '--request-id', 'pair_gateway_launcher_smoke',
+    '--enrollment-ticket', `enr_${'a'.repeat(32)}.${'b'.repeat(43)}`,
   ], {
     cwd: workdir,
     encoding: 'utf8',
@@ -440,7 +444,7 @@ try {
       'invalid existing approval tokens fail closed instead of rotating silently',
       'non-file environment targets fail closed before reading',
       'CLI initialization, rotation, and clearing never print token values',
-      'the local Gateway launcher injects the token only into a verified installer child and rejects remote Router URLs or untrusted package mirrors',
+      'the local Gateway launcher withholds the Router token from its verified installer child and rejects remote Router URLs or untrusted package mirrors',
        'startup preflight distinguishes legacy and Gateway-only Router listeners',
        'startup preflight accepts an available configured port',
        'the stop command terminates a verified legacy background Router when its PID state is unavailable',

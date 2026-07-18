@@ -34,6 +34,8 @@ export interface PairingRequestRecord {
   client?: PairingClientMetadata
   createdAt: number
   expiresAt: number
+  enrollmentNonce?: string
+  enrollmentConsumedAt?: number
   approvedAt?: number
   claimedAt?: number
   codeHash?: string
@@ -77,6 +79,8 @@ export interface PairingApprovalOptions {
   hermesAgentId?: string
   gatewayId?: string
   gatewayToken?: string
+  /** Internal one-shot enrollment path; never accepted from HTTP input. */
+  consumeEnrollmentTicket?: boolean
 }
 
 export interface DebugGatewaySeed {
@@ -272,6 +276,8 @@ function isPairingRequestRecord(value: unknown): value is PairingRequestRecord {
     typeof record.expiresAt === 'number' && Number.isFinite(record.expiresAt) &&
     isOptionalNumber(record.approvedAt) &&
     isOptionalNumber(record.claimedAt) &&
+    isOptionalString(record.enrollmentNonce) &&
+    isOptionalNumber(record.enrollmentConsumedAt) &&
     isOptionalString(record.codeHash) &&
     isOptionalString(record.hermesAgentId) &&
     isOptionalString(record.gatewayId) &&
@@ -286,9 +292,21 @@ export function hashPairingMaterial(secret: string, value: string): string {
   return createHmac('sha256', secret).update(value).digest('base64url')
 }
 
-export function buildPairingPrompt(record: PairingRequestRecord): string {
+export function buildGatewayEnrollmentTicket(secret: string, record: PairingRequestRecord): string {
+  if (!record.enrollmentNonce) return ''
+  const signature = hashPairingMaterial(
+    secret,
+    `gateway-enrollment:${record.requestId}:${record.enrollmentNonce}`,
+  )
+  return `enr_${record.enrollmentNonce}.${signature}`
+}
+
+export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicket = ''): string {
   const router = record.routerUrl.replace(/\/$/, '')
   const expiresAt = new Date(record.expiresAt * 1000).toISOString()
+  const enrollmentArgument = enrollmentTicket
+    ? ` --enrollment-ticket "${enrollmentTicket}"`
+    : ''
   return [
     'Hermes Hub Gateway pairing request',
     '',
@@ -302,7 +320,7 @@ export function buildPairingPrompt(record: PairingRequestRecord): string {
     '   npm install -g @over01470914/hermes-hub-gateway@latest',
     '',
     '2. Run pair once:',
-    `   hermes-hub-gateway pair --runtime hermes --router "${router}" --request-id "${record.requestId}"`,
+    `   hermes-hub-gateway pair --runtime hermes --router "${router}" --request-id "${record.requestId}"${enrollmentArgument}`,
     '',
     'If either command needs terminal or network permission, request native approval for that exact command. Do not request or expose secrets. Return the CLI output unchanged.',
   ].join('\n')
@@ -356,7 +374,8 @@ export class InMemoryPairingStore {
       capabilities: cleanCapabilities(input.capabilities),
       client: cleanClientMetadata(input.client),
       createdAt: now,
-      expiresAt: now + ttl
+      expiresAt: now + ttl,
+      enrollmentNonce: randomUUID().replaceAll('-', ''),
     }
     this.records.set(record.requestId, record)
     try {
@@ -425,6 +444,7 @@ export class InMemoryPairingStore {
     record.gatewayCredentialState = activeCredential ? 'active' : 'provisional'
     record.gatewayCredentialActivatedAt = activeCredential?.gatewayCredentialActivatedAt || activeCredential?.claimedAt
     delete record.gatewayCredentialRevokedAt
+    if (approvalOptions.consumeEnrollmentTicket) record.enrollmentConsumedAt = this.nowSeconds()
     try {
       this.persist()
     } catch (error) {
@@ -440,6 +460,25 @@ export class InMemoryPairingStore {
       gatewayToken,
       gatewayStreamPath: `/router/hermes-hub-gateways/${gatewayId}/stream`
     }
+  }
+
+  enroll(requestId: string, enrollmentTicket: string, options: PairingApprovalOptions): PairingApproval {
+    const record = this.requireLive(requestId)
+    if (record.approvedAt || record.enrollmentConsumedAt) {
+      throw Object.assign(new Error('Gateway enrollment ticket has already been consumed'), {
+        code: 'gateway_enrollment_consumed',
+      })
+    }
+    const expectedTicket = buildGatewayEnrollmentTicket(this.secret, record)
+    const supplied = Buffer.from(enrollmentTicket || '')
+    const expected = Buffer.from(expectedTicket)
+    if (!expectedTicket || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+      throw Object.assign(new Error('Gateway enrollment ticket is invalid'), {
+        code: 'gateway_enrollment_invalid',
+      })
+    }
+
+    return this.approve(requestId, { ...options, consumeEnrollmentTicket: true })
   }
 
   ensureDebugGateway(seed: DebugGatewaySeed): void {
@@ -511,6 +550,26 @@ export class InMemoryPairingStore {
         throw Object.assign(new Error('Gateway credential approval expired'), { code: 'gateway_credential_expired' })
       }
       throw Object.assign(new Error('Unknown gateway or invalid Gateway token'), { code: 'gateway_credential_invalid' })
+    }
+    return record
+  }
+
+  verifyPairingGateway(requestId: string, gatewayId: string, token: string): PairingRequestRecord {
+    const record = this.records.get(requestId)
+    if (!record || !record.gatewayId || !record.gatewayTokenHash) {
+      throw Object.assign(new Error('Unknown Gateway pairing credential'), { code: 'gateway_credential_invalid' })
+    }
+    const cleanGatewayId = requireIdentityId(gatewayId, 'gw_', () => '')
+    const cleanToken = requireGatewayToken(token)
+    const candidate = hashPairingMaterial(this.secret, `${cleanGatewayId}:${cleanToken}`)
+    const expected = Buffer.from(record.gatewayTokenHash)
+    const supplied = Buffer.from(candidate)
+    if (
+      cleanGatewayId !== record.gatewayId ||
+      supplied.length !== expected.length ||
+      !timingSafeEqual(supplied, expected)
+    ) {
+      throw Object.assign(new Error('Unknown Gateway pairing credential'), { code: 'gateway_credential_invalid' })
     }
     return record
   }
@@ -661,7 +720,12 @@ export class InMemoryPairingStore {
       createdAt: record.createdAt,
       expiresAt: record.expiresAt,
       status: record.claimedAt ? 'claimed' : record.expiresAt < now ? 'expired' : record.approvedAt ? 'approved' : 'pending',
-      prompt: buildPairingPrompt(record)
+      prompt: buildPairingPrompt(
+        record,
+        record.approvedAt || record.enrollmentConsumedAt
+          ? ''
+          : buildGatewayEnrollmentTicket(this.secret, record),
+      )
     }
   }
 }
