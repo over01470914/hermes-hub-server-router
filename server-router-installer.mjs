@@ -17,10 +17,10 @@ import { dirname, join } from 'node:path'
 import { createHash, randomBytes, randomInt } from 'node:crypto'
 import os from 'node:os'
 
-const VERSION = '2026-07-14.4'
+const VERSION = '2026-07-19.2'
 const DEFAULT_BASE_URL = 'https://raw.githubusercontent.com/over01470914/hermes-hub-server-router/main/'
 const DEFAULT_GATEWAY_PACKAGE_BASE_URL = 'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/main/'
-const DEFAULT_ROUTER_URL = 'https://hermes-hub.s3studio.fun/router-dev'
+const DEFAULT_ROUTER_URL = 'https://hermes-hub.s3studio.fun'
 const GATEWAY_PACKAGE_MANIFEST_SCHEMA = 'hermes-hub-gateway-package/v1'
 const GATEWAY_PACKAGE_MANIFEST = 'package-manifest.json'
 const GATEWAY_PACKAGE_PAYLOAD_FILES = Object.freeze([
@@ -43,6 +43,7 @@ const SERVER_FILES = [
   'src/bridgeServer.ts',
   'src/core/http/boundedSseWriter.ts',
   'src/core/http/routerBasePath.ts',
+  'src/core/http/publicRouterUrl.ts',
   'src/core/observability/routerLogger.ts',
   'src/core/persistence/privateStateFile.ts',
   'src/core/protocol/bridgeProtocol.ts',

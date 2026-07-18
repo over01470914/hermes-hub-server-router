@@ -6,6 +6,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { WebSocketServer } from 'ws'
 import { BoundedSseWriter } from './core/http/boundedSseWriter.js'
 import { routerBasePath, stripRouterBasePath } from './core/http/routerBasePath.js'
+import { resolvePublicRouterUrl } from './core/http/publicRouterUrl.js'
 import { errorMessage, logRouter, type RouterLogLevel } from './core/observability/routerLogger.js'
 import { readPrivateTextFileSync, writePrivateTextFileAtomicSync } from './core/persistence/privateStateFile.js'
 import { resolveRouterStatePaths } from './core/persistence/routerStatePaths.js'
@@ -51,7 +52,8 @@ const config = readBridgeConfig()
 const routerInstanceId = randomUUID()
 const port = Number(process.env.HERMES_HUB_ROUTER_PORT || 4320)
 const host = process.env.HERMES_HUB_ROUTER_HOST || '0.0.0.0'
-const routerUrl = (process.env.HERMES_HUB_ROUTER_URL || `http://127.0.0.1:${port}`).replace(/\/$/, '')
+const configuredRouterUrl = process.env.HERMES_HUB_ROUTER_URL || `http://127.0.0.1:${port}`
+const { routerUrl, strippedCanonicalPath: canonicalRouterPathStripped } = resolvePublicRouterUrl(configuredRouterUrl)
 const configuredRouterBasePath = routerBasePath(routerUrl)
 const {
   diagnosticsDir,
@@ -2569,6 +2571,7 @@ server.listen(port, host, () => {
     host,
     port,
     routerUrl,
+    canonicalRouterPathStripped,
     diagnosticsDir,
     pairingStorePath,
     sessionMetadataStorePath,

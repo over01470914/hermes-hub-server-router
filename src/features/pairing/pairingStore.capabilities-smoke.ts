@@ -64,16 +64,16 @@ assert.deepEqual(
 
 const pathStore = new InMemoryPairingStore(
   'pairing-base-path-smoke-secret',
-  'https://router.example.test/router-dev/'
+  'https://router.example.test/router-prefix/'
 )
 const pathRequest = pathStore.create({ user: 'router-base-path' })
 assert.equal(
   pathRequest.routerUrl,
-  'https://router.example.test/router-dev',
+  'https://router.example.test/router-prefix',
   'operator-configured Router base paths must be preserved'
 )
 assert.match(pathRequest.prompt, /npm install -g @over01470914\/hermes-hub-gateway@latest/)
-assert.match(pathRequest.prompt, /hermes-hub-gateway pair --runtime hermes --router "https:\/\/router\.example\.test\/router-dev"/)
+assert.match(pathRequest.prompt, /hermes-hub-gateway pair --runtime hermes --router "https:\/\/router\.example\.test\/router-prefix"/)
 assert.match(pathRequest.prompt, /Use the official CLI below\. Execute the install command, then run pair once/)
 assert.match(pathRequest.prompt, /request native approval for that exact command/)
 assert.match(pathRequest.prompt, /Return the CLI output unchanged/)
