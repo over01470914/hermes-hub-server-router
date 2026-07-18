@@ -354,26 +354,49 @@ async function waitForProcessExit(pid, timeoutMs) {
 }
 
 export function routerListenerPid(port) {
-  if (process.platform !== 'win32') return undefined
-  const powershell = join(windowsSystemExecutable('WindowsPowerShell'), 'v1.0', 'powershell.exe')
-  const powershellResult = spawnSync(powershell, [
-    '-NoProfile',
-    '-NonInteractive',
-    '-Command',
-    `$connection = Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -ne $connection) { [Console]::Out.Write($connection.OwningProcess) }`,
-  ], { encoding: 'utf8', windowsHide: true })
-  const powershellPid = Number(String(powershellResult.stdout || '').trim())
-  if (Number.isSafeInteger(powershellPid) && powershellPid > 0) return powershellPid
-  const result = spawnSync(windowsSystemExecutable('netstat.exe'), ['-ano', '-p', 'tcp'], {
-    encoding: 'utf8',
-    windowsHide: true,
-  })
-  if (result.status !== 0) return undefined
-  for (const line of String(result.stdout || '').split(/\r?\n/)) {
-    const columns = line.trim().split(/\s+/)
-    if (columns.length < 5 || columns[0].toUpperCase() !== 'TCP') continue
-    if (!columns[1].endsWith(`:${port}`) || columns.at(-2).toUpperCase() !== 'LISTENING') continue
-    const pid = Number(columns.at(-1))
+  if (process.platform === 'win32') {
+    const powershell = join(windowsSystemExecutable('WindowsPowerShell'), 'v1.0', 'powershell.exe')
+    const powershellResult = spawnSync(powershell, [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `$connection = Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -ne $connection) { [Console]::Out.Write($connection.OwningProcess) }`,
+    ], { encoding: 'utf8', windowsHide: true })
+    const powershellPid = Number(String(powershellResult.stdout || '').trim())
+    if (Number.isSafeInteger(powershellPid) && powershellPid > 0) return powershellPid
+    const result = spawnSync(windowsSystemExecutable('netstat.exe'), ['-ano', '-p', 'tcp'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    })
+    if (result.status !== 0) return undefined
+    for (const line of String(result.stdout || '').split(/\r?\n/)) {
+      const columns = line.trim().split(/\s+/)
+      if (columns.length < 5 || columns[0].toUpperCase() !== 'TCP') continue
+      if (!columns[1].endsWith(`:${port}`) || columns.at(-2).toUpperCase() !== 'LISTENING') continue
+      const pid = Number(columns.at(-1))
+      if (Number.isSafeInteger(pid) && pid > 0) return pid
+    }
+    return undefined
+  }
+
+  const lsof = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' })
+  for (const line of String(lsof.stdout || '').split(/\r?\n/)) {
+    const pid = Number(line.trim())
+    if (Number.isSafeInteger(pid) && pid > 0) return pid
+  }
+
+  const fuser = spawnSync('fuser', ['-n', 'tcp', String(port)], { encoding: 'utf8' })
+  const fuserOutput = `${String(fuser.stdout || '')}\n${String(fuser.stderr || '')}`
+  const fuserPids = fuserOutput.match(/(?:^|\s)(\d+)(?=\s|$)/g) || []
+  for (const candidate of fuserPids) {
+    const pid = Number(candidate.trim())
+    if (Number.isSafeInteger(pid) && pid > 0) return pid
+  }
+
+  const ss = spawnSync('ss', ['-ltnp', `sport = :${port}`], { encoding: 'utf8' })
+  const ssPids = String(ss.stdout || '').matchAll(/pid=(\d+)/g)
+  for (const match of ssPids) {
+    const pid = Number(match[1])
     if (Number.isSafeInteger(pid) && pid > 0) return pid
   }
   return undefined
