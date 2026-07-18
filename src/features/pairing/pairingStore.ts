@@ -322,7 +322,9 @@ export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicke
     '2. Run pair once:',
     `   hermes-hub-gateway pair --runtime hermes --router "${router}" --request-id "${record.requestId}"${enrollmentArgument}`,
     '',
-    'If either command needs terminal or network permission, request native approval for that exact command. Do not request or expose secrets. Return the CLI output unchanged.',
+    'If either command needs terminal or network permission, request native approval for that exact command. Do not request or expose secrets.',
+    'After pair returns the 8-digit code, return it to the Client and state: Gateway restart required — restart Hermes Gateway once from the Client.',
+    'Never run `hermes gateway restart`, stop Hermes Gateway, uninstall the plugin, or manage a service from this pairing task.',
   ].join('\n')
 }
 
