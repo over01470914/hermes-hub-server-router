@@ -33,6 +33,7 @@ function state(capabilities: string[] = []): GatewayState {
 class FakeRegistry {
   requestCalls = 0
   heartbeatCalls = 0
+  lastRequest: GatewayRpcRequest | null = null
   response: GatewayRpcResponse = { status: 200, headers: {}, bodyBase64: '' }
 
   constructor(readonly connection: GatewayState | null) {}
@@ -45,8 +46,9 @@ class FakeRegistry {
     return this.connection ? [this.connection] : []
   }
 
-  async requestByAgentId(_id: string, _payload: GatewayRpcRequest): Promise<GatewayRpcResponse> {
+  async requestByAgentId(_id: string, payload: GatewayRpcRequest): Promise<GatewayRpcResponse> {
     this.requestCalls += 1
+    this.lastRequest = payload
     return this.response
   }
 
@@ -89,6 +91,43 @@ function rpc(method: string, params: Record<string, unknown> = {}): GatewayRpcRe
   )
   await connections.heartbeat(hermesAgentId)
   assert.equal(gateway.heartbeatCalls, 1)
+}
+
+{
+  const gateway = new FakeRegistry(state(['sessions']))
+  const connections = repository(gateway)
+
+  await connections.request(hermesAgentId, {
+    method: 'PATCH',
+    path: '/api/sessions/session_1',
+  })
+  assert.equal(gateway.lastRequest?.method, 'PATCH')
+  assert.equal(gateway.lastRequest?.path, '/api/sessions/session_1')
+
+  await connections.request(hermesAgentId, {
+    method: 'DELETE',
+    path: '/api/sessions/session_1',
+  })
+  assert.equal(gateway.lastRequest?.method, 'DELETE')
+
+  await connections.request(hermesAgentId, {
+    method: 'POST',
+    path: '/api/sessions/session_1/fork',
+  })
+  assert.equal(gateway.lastRequest?.path, '/api/sessions/session_1/fork')
+}
+
+{
+  const gateway = new FakeRegistry(state([]))
+  const connections = repository(gateway)
+  await assert.rejects(
+    connections.request(hermesAgentId, {
+      method: 'PATCH',
+      path: '/api/sessions/session_1',
+    }),
+    /required capability: sessions/,
+  )
+  assert.equal(gateway.requestCalls, 0)
 }
 
 console.log('HermesGatewayRepository smoke passed.')

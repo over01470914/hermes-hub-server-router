@@ -6,7 +6,6 @@
   "engines": {
     "node": ">=18"
   },
-  "packageManager": "pnpm@11.11.0",
   "scripts": {
     "init:router": "node router-local-env.mjs init",
     "dev": "node router-local-env.mjs run",
@@ -16,7 +15,7 @@
     "pair-gateway": "node router-local-env.mjs pair-gateway",
     "check": "tsc -p tsconfig.json --pretty false",
     "smoke": "node router-local-env.smoke.mjs && tsx src/features/pairing/pairingStore.capabilities-smoke.ts",
-    "test": "corepack pnpm run check && corepack pnpm run smoke"
+    "test": "pnpm run check && pnpm run smoke"
   },
   "dependencies": {
     "ws": "^8.18.3"

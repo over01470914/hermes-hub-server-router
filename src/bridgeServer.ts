@@ -554,11 +554,9 @@ function sendNativeSessionRequired(response: ServerResponse): void {
   })
 }
 
-function sendSessionMutationRejected(response: ServerResponse, code = 'session_read_only'): void {
-  sendJson(response, 409, {
-    error: 'Session mutation is unavailable after the native Gateway session cutover',
-    code,
-  })
+function gatewayAdvertisesCapability(hermesAgentId: string, capability: string): boolean {
+  const gateway = hermesGateways.get(hermesAgentId)
+  return gateway?.online === true && gateway.capabilities?.includes(capability) === true
 }
 
 function sessionIdFromBody(body: Buffer): string | undefined {
@@ -1271,13 +1269,14 @@ async function handleBridgeDeleteSession(
   url: URL,
   rawSessionId: string
 ): Promise<void> {
-  const decodedSessionId = decodeURIComponent(rawSessionId)
-  const sessionId = encodeURIComponent(decodedSessionId)
+  const clientSessionId = decodeURIComponent(rawSessionId)
+  const hermesSessionId = sessionReadTarget(payload.hermesAgentId, clientSessionId)
+  const sessionId = encodeURIComponent(hermesSessionId)
   const profile = (url.searchParams.get('profile') || '').trim()
   const profileQuery = profile ? `?profile=${encodeURIComponent(profile)}` : ''
   const startedAt = Date.now()
   logRouter('warn', 'Bridge session delete requested', {
-    sessionId: decodedSessionId,
+    sessionId: clientSessionId,
     hasProfile: Boolean(profile)
   })
   const proxied = await proxyViaGateway(
@@ -1287,19 +1286,85 @@ async function handleBridgeDeleteSession(
   )
   logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge session delete completed', {
     ...proxiedLogContext(proxied, undefined, startedAt),
-    sessionId: decodedSessionId
+    sessionId: clientSessionId
   })
   if (proxiedStatus(proxied) >= 200 && proxiedStatus(proxied) < 300) {
     try {
-      sessionMetadataStore.delete(payload.hermesAgentId, decodedSessionId)
+      sessionMetadataStore.delete(payload.hermesAgentId, clientSessionId)
     } catch (error) {
       logRouter(
         'warn',
         'Bridge session metadata cleanup failed after upstream delete',
-        { sessionId: decodedSessionId },
+        { sessionId: clientSessionId },
         error
       )
     }
+  }
+  sendGatewayResponse(response, proxied.response)
+}
+
+function projectNativeSessionMutationPayload(
+  payload: unknown,
+  conversationId: string,
+  hermesSessionId: string,
+): unknown {
+  const record = asRecord(payload)
+  if (!record) return payload
+  const nested = asRecord(record.session) || asRecord(record.data)
+  const source = nested || record
+  const session = {
+    ...source,
+    id: conversationId,
+    session_id: conversationId,
+    conversation_id: conversationId,
+    hermes_session_id: hermesSessionId,
+    native: true,
+    readOnly: false,
+    read_only: false,
+  }
+  return nested ? { ...record, session, data: session } : { session, data: session }
+}
+
+async function handleBridgeRenameSession(
+  request: IncomingMessage,
+  response: ServerResponse,
+  payload: Pick<BridgeTokenPayload, 'hermesAgentId' | 'deviceId'>,
+  url: URL,
+  rawSessionId: string,
+): Promise<void> {
+  const clientSessionId = decodeURIComponent(rawSessionId)
+  const hermesSessionId = sessionReadTarget(payload.hermesAgentId, clientSessionId)
+  const input = await readJson(request)
+  const title = typeof input.title === 'string' ? input.title.trim() : ''
+  if (!title) {
+    sendJson(response, 400, { error: 'Session title is required', code: 'validation_error' })
+    return
+  }
+  const profile = (url.searchParams.get('profile') || '').trim()
+  const profileQuery = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+  const startedAt = Date.now()
+  logRouter('info', 'Bridge session rename requested', {
+    sessionId: clientSessionId,
+    hasProfile: Boolean(profile),
+  })
+  const proxied = await proxyViaGateway(payload, `api/sessions/${encodeURIComponent(hermesSessionId)}${profileQuery}`, {
+    method: 'PATCH',
+    body: Buffer.from(JSON.stringify({ title }), 'utf8'),
+    contentType: 'application/json',
+    sourceHeaders: request.headers,
+  })
+  const status = proxiedStatus(proxied)
+  logRouter(statusLevel(status), 'Bridge session rename completed', {
+    ...proxiedLogContext(proxied, undefined, startedAt),
+    sessionId: clientSessionId,
+  })
+  if (status >= 200 && status < 300) {
+    const conversation = nativeConversationStore.getByConversationId(payload.hermesAgentId, clientSessionId)
+    const responsePayload = conversation
+      ? projectNativeSessionMutationPayload(jsonPayloadFromProxied(proxied), clientSessionId, hermesSessionId)
+      : sessionMetadataStore.applyToPayload(payload.hermesAgentId, jsonPayloadFromProxied(proxied))
+    sendJson(response, status, responsePayload)
+    return
   }
   sendGatewayResponse(response, proxied.response)
 }
@@ -1337,7 +1402,8 @@ async function handleBridgeForkSession(
   url: URL,
   rawSessionId: string
 ): Promise<void> {
-  const sourceSessionId = decodeURIComponent(rawSessionId)
+  const sourceConversationId = decodeURIComponent(rawSessionId)
+  const sourceSessionId = sessionReadTarget(payload.hermesAgentId, sourceConversationId)
   const sessionId = encodeURIComponent(sourceSessionId)
   const profile = (url.searchParams.get('profile') || '').trim()
   const profileQuery = profile ? `?profile=${encodeURIComponent(profile)}` : ''
@@ -1369,7 +1435,7 @@ async function handleBridgeForkSession(
     const normalized = normalizeForkSessionPayload(jsonPayloadFromProxied(proxied), profile)
     const forkedSessionId = sessionIdFromBody(Buffer.from(JSON.stringify(normalized), 'utf8'))
     if (forkedSessionId) {
-      sessionMetadataStore.copy(payload.hermesAgentId, sourceSessionId, forkedSessionId)
+      sessionMetadataStore.copy(payload.hermesAgentId, sourceConversationId, forkedSessionId)
     }
     sendJson(
       response,
@@ -1389,36 +1455,30 @@ async function handleBridgeArchiveSession(
   rawSessionId: string,
   archived: boolean
 ): Promise<void> {
-  const decodedSessionId = decodeURIComponent(rawSessionId)
-  const sessionId = encodeURIComponent(decodedSessionId)
+  const clientSessionId = decodeURIComponent(rawSessionId)
+  const hermesSessionId = sessionReadTarget(payload.hermesAgentId, clientSessionId)
+  const sessionId = encodeURIComponent(hermesSessionId)
   const profile = (url.searchParams.get('profile') || '').trim()
   const profileQuery = profile ? `?profile=${encodeURIComponent(profile)}` : ''
   const startedAt = Date.now()
   logRouter('info', 'Bridge session archive update requested', {
-    sessionId: decodedSessionId,
+    sessionId: clientSessionId,
     archived,
     hasProfile: Boolean(profile)
   })
-  if (!archived) {
-    sendJson(response, 501, {
-      error: 'Hermes Gateway does not expose session unarchive',
-      code: 'gateway_capability_unsupported'
-    })
-    return
-  }
   const proxied = await proxyViaGateway(
     payload,
     `api/sessions/${sessionId}${profileQuery}`,
     {
       method: 'PATCH',
-      body: Buffer.from(JSON.stringify({ end_reason: 'archived' }), 'utf8'),
+      body: Buffer.from(JSON.stringify({ archived }), 'utf8'),
       contentType: 'application/json',
       sourceHeaders: request.headers
     }
   )
   logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge session archive update completed', {
     ...proxiedLogContext(proxied, undefined, startedAt),
-    sessionId: decodedSessionId,
+    sessionId: clientSessionId,
     archived
   })
   sendGatewayResponse(response, proxied.response)
@@ -2121,9 +2181,25 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       agentFeatureAvailable(payload, 'cron'),
       agentFeatureAvailable(payload, 'kanban')
     ])
+    const sessionResourcesAvailable = gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions')
     sendJson(response, 200, {
       protocol: 'hermes-hub-bridge/v2',
       features: {
+        sessions: {
+          rename: sessionResourcesAvailable,
+          archive: sessionResourcesAvailable,
+          delete: sessionResourcesAvailable,
+          fork: sessionResourcesAvailable,
+          // Hermes treats a session branch as a fork. Message-level `/branch`
+          // remains a native session command and is not a Router mutation API.
+          branch: sessionResourcesAvailable,
+        },
+        attachments: {
+          // No public Gateway attachment capability exists yet. Do not proxy a
+          // WebUI/private host path merely because a client asks for one.
+          read: false,
+          write: false,
+        },
         cron: {
           read: cronAvailable && hasAgentFeaturePermission(payload, 'cron', 'read'),
           write: cronAvailable && hasAgentFeaturePermission(payload, 'cron', 'write'),
@@ -2212,16 +2288,24 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (sessionGetMatch && request.method === 'PATCH') {
-    sendSessionMutationRejected(response)
+    const input = await readJson(request)
+    if (typeof input.archived !== 'boolean' || Object.keys(input).some(key => key !== 'archived')) {
+      sendJson(response, 400, {
+        error: 'Only the archived session field may be updated through this endpoint',
+        code: 'validation_error',
+      })
+      return
+    }
+    await handleBridgeArchiveSession(request, response, payload, url, sessionGetMatch[1], input.archived)
     return
   }
 
   if (sessionGetMatch && request.method === 'DELETE') {
-    sendSessionMutationRejected(response)
+    await handleBridgeDeleteSession(request, response, payload, url, sessionGetMatch[1])
     return
   }
 
-  const sessionActionMatch = pathname.match(/^\/bridge\/sessions\/([^/]+)\/(raw|messages|rename|fork|metadata|model|usage|context|runtime|archive|delete)$/)
+  const sessionActionMatch = pathname.match(/^\/bridge\/sessions\/([^/]+)\/(raw|messages|rename|fork|branch|metadata|model|usage|context|runtime|archive|delete)$/)
   if (sessionActionMatch && request.method === 'GET' && sessionActionMatch[2] === 'raw') {
     await handleBridgeRawSession(request, response, payload, url, sessionActionMatch[1])
     return
@@ -2359,7 +2443,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (sessionActionMatch && request.method === 'POST' && sessionActionMatch[2] === 'rename') {
-    sendSessionMutationRejected(response)
+    await handleBridgeRenameSession(request, response, payload, url, sessionActionMatch[1])
     return
   }
 
@@ -2368,18 +2452,18 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return
   }
 
-  if (sessionActionMatch && request.method === 'POST' && sessionActionMatch[2] === 'fork') {
-    sendUnsupportedGatewayOperation(response, 'native session fork')
+  if (sessionActionMatch && request.method === 'POST' && (sessionActionMatch[2] === 'fork' || sessionActionMatch[2] === 'branch')) {
+    await handleBridgeForkSession(request, response, payload, url, sessionActionMatch[1])
     return
   }
 
   if (sessionActionMatch && request.method === 'POST' && sessionActionMatch[2] === 'archive') {
-    sendSessionMutationRejected(response)
+    await handleBridgeArchiveSession(request, response, payload, url, sessionActionMatch[1], true)
     return
   }
 
   if (sessionActionMatch && request.method === 'POST' && sessionActionMatch[2] === 'delete') {
-    sendSessionMutationRejected(response)
+    await handleBridgeDeleteSession(request, response, payload, url, sessionActionMatch[1])
     return
   }
 
