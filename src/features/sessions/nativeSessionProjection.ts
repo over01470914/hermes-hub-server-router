@@ -41,6 +41,49 @@ function activityUnixSeconds(...values: unknown[]): number | undefined {
   return Math.floor(Math.max(...timestamps))
 }
 
+function detailSessionPayload(payload: unknown): {
+  record: JsonRecord
+  session: JsonRecord
+} | undefined {
+  const record = asRecord(payload)
+  if (!record) return undefined
+  const session = asRecord(record.session) || asRecord(record.data) || record
+  return { record, session }
+}
+
+/**
+ * Applies the same public identity policy to a selected session as the list
+ * projection.  In particular, a raw Hermes row must remain read-only until it
+ * is backed by a Router-owned native conversation.
+ */
+export function projectNativeSessionDetailPayload(
+  payload: unknown,
+  nativeConversation?: NativeConversationRecord,
+): unknown {
+  const detail = detailSessionPayload(payload)
+  if (!detail) return payload
+
+  const session = nativeConversation
+    ? {
+        ...detail.session,
+        id: nativeConversation.conversationId,
+        session_id: nativeConversation.conversationId,
+        conversation_id: nativeConversation.conversationId,
+        hermes_session_id: nativeConversation.sessionId,
+        native: true,
+        readOnly: false,
+        read_only: false,
+      }
+    : {
+        ...detail.session,
+        native: false,
+        readOnly: true,
+        read_only: true,
+      }
+
+  return { ...detail.record, session }
+}
+
 export function projectNativeSessionListPayload(
   payload: unknown,
   nativeConversations: NativeConversationRecord[],

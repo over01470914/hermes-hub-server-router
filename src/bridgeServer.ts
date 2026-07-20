@@ -34,7 +34,7 @@ import { ClientEventHub } from './features/realtime/clientEventHub.js'
 import { PendingRealtimeFrameBuffer } from './features/realtime/pendingRealtimeFrames.js'
 import { SessionMetadataStore } from './features/sessions/sessionMetadataStore.js'
 import { NativeConversationStore } from './features/sessions/nativeConversationStore.js'
-import { projectNativeSessionListPayload } from './features/sessions/nativeSessionProjection.js'
+import { projectNativeSessionDetailPayload, projectNativeSessionListPayload } from './features/sessions/nativeSessionProjection.js'
 import {
   KanbanBridgeRequestError,
   normalizeKanbanBridgeError,
@@ -2265,25 +2265,18 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       sessionId: decodeURIComponent(sessionGetMatch[1])
     })
     const conversation = nativeConversationStore.getByConversationId(payload.hermesAgentId, clientSessionId)
-    if (!conversation) {
-      sendGatewaySessionResponse(response, proxied.response, payload.hermesAgentId)
-      return
-    }
-    const parsed = asRecord(parseJsonBuffer(Buffer.from(proxied.response.bodyBase64 || '', 'base64')))
-    const session = asRecord(parsed?.session) || asRecord(parsed?.data) || parsed
-    sendJson(response, proxied.response.status, {
-      ...(parsed || {}),
-      session: {
-        ...(session || {}),
-        id: conversation.conversationId,
-        session_id: conversation.conversationId,
-        conversation_id: conversation.conversationId,
-        hermes_session_id: conversation.sessionId,
-        native: true,
-        readOnly: false,
-        read_only: false,
-      },
-    })
+    const metadataApplied = applySessionMetadataToBody(
+      payload.hermesAgentId,
+      Buffer.from(proxied.response.bodyBase64 || '', 'base64'),
+    )
+    sendJson(
+      response,
+      proxied.response.status,
+      projectNativeSessionDetailPayload(
+        parseJsonBuffer(metadataApplied),
+        conversation,
+      ),
+    )
     return
   }
 

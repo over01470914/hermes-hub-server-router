@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import type { NativeConversationRecord } from './nativeConversationStore.js'
-import { projectNativeSessionListPayload } from './nativeSessionProjection.js'
+import { projectNativeSessionDetailPayload, projectNativeSessionListPayload } from './nativeSessionProjection.js'
 
 const conversation: NativeConversationRecord = {
   hermesAgentId: 'agent_native_a',
@@ -52,6 +52,27 @@ assert.equal(legacy.id, 'session_legacy_a')
 assert.equal(legacy.native, false)
 assert.equal(legacy.readOnly, true)
 
+const nativeDetail = projectNativeSessionDetailPayload({
+  data: {
+    id: 'session_native_a',
+    title: 'Native detail',
+  },
+}, conversation) as { session: Record<string, unknown> }
+assert.equal(nativeDetail.session.id, conversation.conversationId)
+assert.equal(nativeDetail.session.hermes_session_id, conversation.sessionId)
+assert.equal(nativeDetail.session.native, true)
+assert.equal(nativeDetail.session.readOnly, false)
+
+const legacyDetail = projectNativeSessionDetailPayload({
+  session: {
+    id: 'api_legacy_session',
+    title: 'Legacy detail',
+  },
+}) as { session: Record<string, unknown> }
+assert.equal(legacyDetail.session.id, 'api_legacy_session')
+assert.equal(legacyDetail.session.native, false)
+assert.equal(legacyDetail.session.readOnly, true)
+
 console.log(JSON.stringify({
   ok: true,
   checks: [
@@ -59,5 +80,6 @@ console.log(JSON.stringify({
     'Hermes session metadata is preserved',
     'newest ISO and Unix activity timestamps win',
     'legacy sessions remain read-only',
+    'detail responses use the same native and legacy identity policy',
   ],
 }, null, 2))
