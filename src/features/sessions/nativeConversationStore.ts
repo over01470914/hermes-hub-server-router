@@ -86,6 +86,36 @@ export class NativeConversationStore {
     return created
   }
 
+  ensureForSessions(hermesAgentId: string, sessionIds: Iterable<string>): NativeConversationRecord[] {
+    this.assertAgentId(hermesAgentId)
+    const knownSessionIds = new Set(
+      [...this.conversations.values()]
+        .filter(record => record.hermesAgentId === hermesAgentId && record.sessionId)
+        .map(record => record.sessionId as string),
+    )
+    let changed = false
+    for (const sessionId of sessionIds) {
+      if (!idPattern.test(sessionId) || knownSessionIds.has(sessionId)) continue
+      const now = new Date().toISOString()
+      const created: NativeConversationRecord = {
+        hermesAgentId,
+        conversationId: `conv_${randomUUID()}`,
+        laneId: `lane_${randomUUID()}`,
+        sessionId,
+        native: true,
+        readOnly: false,
+        createdAt: now,
+        updatedAt: now,
+      }
+      this.conversations.set(this.conversationKey(hermesAgentId, created.conversationId), created)
+      this.lanes.set(this.laneKey(hermesAgentId, created.laneId), created)
+      knownSessionIds.add(sessionId)
+      changed = true
+    }
+    if (changed) this.save()
+    return this.list(hermesAgentId)
+  }
+
   beginSubmission(
     hermesAgentId: string,
     submissionId: string,

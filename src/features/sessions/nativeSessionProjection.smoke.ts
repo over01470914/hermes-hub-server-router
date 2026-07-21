@@ -13,6 +13,13 @@ const conversation: NativeConversationRecord = {
   updatedAt: '2026-07-17T03:00:00.000Z',
 }
 
+const staleConversation: NativeConversationRecord = {
+  ...conversation,
+  conversationId: 'conv_stale_aaaaaaaa',
+  laneId: 'lane_stale_aaaaaaaa',
+  sessionId: 'session_not_listed',
+}
+
 const projected = projectNativeSessionListPayload({
   sessions: [
     {
@@ -31,7 +38,7 @@ const projected = projectNativeSessionListPayload({
       title: 'Legacy title',
     },
   ],
-}, [conversation]) as { sessions: Array<Record<string, unknown>> }
+}, [conversation, staleConversation]) as { sessions: Array<Record<string, unknown>> }
 
 const [native, legacy] = projected.sessions
 assert.equal(native.id, conversation.conversationId)
@@ -51,6 +58,7 @@ assert.equal(native.readOnly, false)
 assert.equal(legacy.id, 'session_legacy_a')
 assert.equal(legacy.native, false)
 assert.equal(legacy.readOnly, true)
+assert.equal(projected.sessions.some(session => session.id === staleConversation.conversationId), false)
 
 const nativeDetail = projectNativeSessionDetailPayload({
   data: {
@@ -79,6 +87,7 @@ console.log(JSON.stringify({
     'native conversation identity remains stable',
     'Hermes session metadata is preserved',
     'newest ISO and Unix activity timestamps win',
+    'stale persisted conversation mappings are not projected',
     'legacy sessions remain read-only',
     'detail responses use the same native and legacy identity policy',
   ],

@@ -11,6 +11,8 @@ export interface PairingRequestInput {
   capabilities?: unknown
   client?: unknown
   ttlSeconds?: unknown
+  replaceRequestId?: unknown
+  replaceToken?: unknown
 }
 
 export interface PairingClientMetadata {
@@ -35,6 +37,7 @@ export interface PairingRequestRecord {
   createdAt: number
   expiresAt: number
   enrollmentNonce?: string
+  replacementTokenHash?: string
   enrollmentConsumedAt?: number
   approvedAt?: number
   claimedAt?: number
@@ -62,6 +65,8 @@ export interface PublicPairingRequest {
   expiresAt: number
   status: 'pending' | 'approved' | 'claimed' | 'expired'
   prompt: string
+  /** Returned only from request creation; never included in status reads or prompts. */
+  replacementToken?: string
 }
 
 export interface PairingApproval {
@@ -277,6 +282,7 @@ function isPairingRequestRecord(value: unknown): value is PairingRequestRecord {
     isOptionalNumber(record.approvedAt) &&
     isOptionalNumber(record.claimedAt) &&
     isOptionalString(record.enrollmentNonce) &&
+    isOptionalString(record.replacementTokenHash) &&
     isOptionalNumber(record.enrollmentConsumedAt) &&
     isOptionalString(record.codeHash) &&
     isOptionalString(record.hermesAgentId) &&
@@ -348,8 +354,10 @@ export class InMemoryPairingStore {
   create(input: PairingRequestInput): PublicPairingRequest {
     const now = this.nowSeconds()
     const before = [...this.records.entries()].map(([id, item]) => [id, cloneRecord(item)] as const)
+    const replacement = this.pendingReplacement(input, now)
     const pruned = this.pruneExpiredPending(now)
-    const livePending = [...this.records.values()].filter(record => this.isLivePending(record, now))
+    const livePending = [...this.records.values()]
+      .filter(record => this.isLivePending(record, now) && record !== replacement)
     if (livePending.length >= MAX_LIVE_PAIRING_REQUESTS) {
       try {
         if (pruned) this.persist()
@@ -361,6 +369,12 @@ export class InMemoryPairingStore {
       throw new PairingCapacityError(Math.max(1, retryAt - now))
     }
     const ttl = typeof input.ttlSeconds === 'number' && input.ttlSeconds > 60 && input.ttlSeconds <= 1800 ? input.ttlSeconds : 1800
+    if (replacement) {
+      replacement.gatewayCredentialState = 'revoked'
+      replacement.gatewayCredentialRevokedAt = now
+      replacement.expiresAt = now - 1
+    }
+    const replacementToken = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '')
     const record: PairingRequestRecord = {
       schemaVersion: PAIRING_RECORD_SCHEMA_VERSION,
       requestId: `pair_${randomUUID()}`,
@@ -378,6 +392,10 @@ export class InMemoryPairingStore {
       createdAt: now,
       expiresAt: now + ttl,
       enrollmentNonce: randomUUID().replaceAll('-', ''),
+      replacementTokenHash: hashPairingMaterial(
+        this.secret,
+        `pairing-replacement:${replacementToken}`,
+      ),
     }
     this.records.set(record.requestId, record)
     try {
@@ -386,7 +404,7 @@ export class InMemoryPairingStore {
       this.records = new Map(before)
       throw error
     }
-    return this.publicRecord(record)
+    return this.publicRecord(record, replacementToken)
   }
 
   get(requestId: string): PublicPairingRequest | null {
@@ -658,6 +676,35 @@ export class InMemoryPairingStore {
     return record
   }
 
+  private pendingReplacement(
+    input: PairingRequestInput,
+    now: number,
+  ): PairingRequestRecord | undefined {
+    const requestId = typeof input.replaceRequestId === 'string'
+      ? input.replaceRequestId.trim()
+      : ''
+    const token = typeof input.replaceToken === 'string'
+      ? input.replaceToken.trim()
+      : ''
+    if (!requestId && !token) return undefined
+    if (!/^pair_[A-Za-z0-9-]{1,200}$/.test(requestId) || !/^[A-Za-z0-9_-]{32,256}$/.test(token)) {
+      throw Object.assign(new Error('Pairing replacement is invalid'), {
+        statusCode: 400,
+        code: 'pairing_replacement_invalid',
+      })
+    }
+    const record = this.records.get(requestId)
+    const expected = record?.replacementTokenHash
+    const supplied = hashPairingMaterial(this.secret, `pairing-replacement:${token}`)
+    if (!record || !expected || !this.isLivePending(record, now) || !safeEqual(expected, supplied)) {
+      throw Object.assign(new Error('Pairing replacement is no longer available'), {
+        statusCode: 409,
+        code: 'pairing_replacement_unavailable',
+      })
+    }
+    return record
+  }
+
   private isLivePending(record: PairingRequestRecord, now: number): boolean {
     return !record.claimedAt && record.expiresAt >= now && inferredCredentialState(record) !== 'revoked'
   }
@@ -708,7 +755,10 @@ export class InMemoryPairingStore {
     return changed
   }
 
-  private publicRecord(record: PairingRequestRecord): PublicPairingRequest {
+  private publicRecord(
+    record: PairingRequestRecord,
+    replacementToken?: string,
+  ): PublicPairingRequest {
     const now = this.nowSeconds()
     return {
       requestId: record.requestId,
@@ -722,6 +772,7 @@ export class InMemoryPairingStore {
       createdAt: record.createdAt,
       expiresAt: record.expiresAt,
       status: record.claimedAt ? 'claimed' : record.expiresAt < now ? 'expired' : record.approvedAt ? 'approved' : 'pending',
+      ...(replacementToken ? { replacementToken } : {}),
       prompt: buildPairingPrompt(
         record,
         record.approvedAt || record.enrollmentConsumedAt

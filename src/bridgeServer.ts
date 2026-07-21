@@ -506,8 +506,12 @@ function applySessionMetadataToBody(hermesAgentId: string, body: Buffer): Buffer
 function projectSessionList(hermesAgentId: string, body: Buffer): Buffer {
   const payload = parseJsonBuffer(body)
   if (!payload) return body
+  const conversations = nativeConversationStore.ensureForSessions(
+    hermesAgentId,
+    sessionIdsFromListPayload(payload),
+  )
   return Buffer.from(JSON.stringify(
-    projectNativeSessionListPayload(payload, nativeConversationStore.list(hermesAgentId)),
+    projectNativeSessionListPayload(payload, conversations),
   ), 'utf8')
 }
 
@@ -559,14 +563,36 @@ function gatewayAdvertisesCapability(hermesAgentId: string, capability: string):
   return gateway?.online === true && gateway.capabilities?.includes(capability) === true
 }
 
+function sessionIdFromRecord(session: Record<string, unknown>): string | undefined {
+  if (typeof session.id === 'string') return session.id
+  if (typeof session.session_id === 'string') return session.session_id
+  if (typeof session.sessionId === 'string') return session.sessionId
+  return undefined
+}
+
+function sessionIdsFromListPayload(payload: unknown): string[] {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return []
+  const data = payload as Record<string, unknown>
+  const sessions = Array.isArray(data.sessions)
+    ? data.sessions
+    : Array.isArray(data.data)
+      ? data.data
+      : []
+  const sessionIds = new Set<string>()
+  for (const value of sessions) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    const sessionId = sessionIdFromRecord(value as Record<string, unknown>)
+    if (sessionId) sessionIds.add(sessionId)
+  }
+  return [...sessionIds]
+}
+
 function sessionIdFromBody(body: Buffer): string | undefined {
   const payload = parseJsonBuffer(body)
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined
   const data = payload as Record<string, unknown>
   const session = data.session && typeof data.session === 'object' && !Array.isArray(data.session) ? data.session as Record<string, unknown> : data
-  if (typeof session.id === 'string') return session.id
-  if (typeof session.session_id === 'string') return session.session_id
-  return undefined
+  return sessionIdFromRecord(session)
 }
 
 function sessionIdFromGatewayResponse(rpc: GatewayRpcResponse): string | undefined {

@@ -107,11 +107,11 @@ export function projectNativeSessionListPayload(
   const nativeSessionIds = new Set(
     nativeConversations.flatMap(conversation => conversation.sessionId ? [conversation.sessionId] : []),
   )
-  const nativeRows = nativeConversations.map(conversation => {
-    const upstream = conversation.sessionId
-      ? upstreamBySessionId.get(conversation.sessionId)
-      : undefined
-    return {
+  const nativeRows = nativeConversations.flatMap(conversation => {
+    if (!conversation.sessionId) return []
+    const upstream = upstreamBySessionId.get(conversation.sessionId)
+    if (!upstream) return []
+    return [{
       ...(upstream || {}),
       id: conversation.conversationId,
       session_id: conversation.conversationId,
@@ -129,7 +129,7 @@ export function projectNativeSessionListPayload(
         conversation.updatedAt,
       ),
       title: upstream?.title || 'New conversation',
-    }
+    }]
   })
   const legacyRows = sourceRows.flatMap(value => {
     const session = asRecord(value)

@@ -10,6 +10,8 @@ const routerUrl = 'https://router.example.test'
 const hermesAgentId = 'agent_rotation_smoke'
 const originalGatewayId = 'gw_rotation_original'
 const originalToken = 'original-gateway-token-000000000000000000000001'
+const supersededGatewayId = 'gw_rotation_superseded'
+const supersededToken = 'superseded-gateway-token-000000000000000000000003'
 const rotatedGatewayId = 'gw_rotation_candidate'
 const rotatedToken = 'rotated-gateway-token-000000000000000000000002'
 
@@ -58,6 +60,50 @@ function request(deviceId: string, ttlSeconds = 300): string {
 }
 
 const firstRequestId = request('device_first')
+assert.equal(
+  store.get(firstRequestId)?.replacementToken,
+  undefined,
+  'replacement tokens are never disclosed through pairing status reads',
+)
+const supersededRequest = store.create({
+  deviceId: 'device_superseded',
+  ttlSeconds: 300,
+})
+assert.match(supersededRequest.replacementToken || '', /^[A-Za-z0-9_-]{32,}$/)
+store.approve(supersededRequest.requestId, {
+  codeGenerator: () => '01010101',
+  hermesAgentId: 'agent_superseded_smoke',
+  gatewayId: supersededGatewayId,
+  gatewayToken: supersededToken,
+})
+assert.equal(
+  store.verifyGateway(supersededGatewayId, supersededToken).gatewayCredentialState,
+  'provisional',
+  'an approved but unclaimed Gateway remains replaceable',
+)
+const supersedingRequest = store.create({
+  deviceId: 'device_superseding',
+  ttlSeconds: 300,
+  replaceRequestId: supersededRequest.requestId,
+  replaceToken: supersededRequest.replacementToken,
+})
+assert.equal(store.get(supersededRequest.requestId)?.status, 'expired')
+assert.throws(
+  () => store.verifyGateway(supersededGatewayId, supersededToken),
+  (error: unknown) => (error as { code?: string }).code === 'gateway_credential_revoked',
+  'replacing an approved prompt revokes its unclaimed Gateway credential',
+)
+assert.equal(supersedingRequest.status, 'pending')
+assert.notEqual(supersedingRequest.replacementToken, supersededRequest.replacementToken)
+assert.throws(
+  () => store.create({
+    deviceId: 'device_invalid_replacement',
+    replaceRequestId: supersedingRequest.requestId,
+    replaceToken: 'invalid-replacement-token-0123456789abcdef',
+  }),
+  (error: unknown) => (error as { code?: string }).code === 'pairing_replacement_unavailable',
+  'a replacement requires the client-only capability returned during creation',
+)
 const firstApproval = store.approve(firstRequestId, {
   codeGenerator: () => '11111111',
   hermesAgentId,
@@ -220,5 +266,6 @@ console.log(JSON.stringify({
     'pairing prompt ignores client-supplied origins and bounds untrusted metadata',
     'a claimed request can safely recover the same claim receipt',
     'a superseded claim cannot reactivate a revoked credential',
+    'a client can replace an unclaimed prompt without exposing its replacement token to Hermes',
   ],
 }, null, 2))

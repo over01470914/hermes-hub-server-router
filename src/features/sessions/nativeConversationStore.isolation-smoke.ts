@@ -9,6 +9,19 @@ const path = join(root, 'native-conversations.json')
 
 try {
   const store = new NativeConversationStore(path)
+  const existingSessions = store.ensureForSessions('agent_native_a', [
+    'session_existing_a',
+    'session_existing_a',
+  ])
+  const existingConversation = store.getBySessionId('agent_native_a', 'session_existing_a')
+  assert.equal(existingSessions.length, 1)
+  assert.ok(existingConversation)
+  assert.equal(
+    store.ensureForSessions('agent_native_a', ['session_existing_a']).length,
+    1,
+  )
+  assert.equal(store.getBySessionId('agent_native_b', 'session_existing_a'), undefined)
+
   const first = store.beginSubmission('agent_native_a', 'sub_aaaaaaaa', undefined)
   const secondAgent = store.beginSubmission('agent_native_b', 'sub_aaaaaaaa', undefined)
   assert.notEqual(first.conversation.conversationId, secondAgent.conversation.conversationId)
@@ -63,6 +76,7 @@ try {
     ok: true,
     checks: [
       'conversation and submission keys are Agent-scoped',
+      'existing Hermes sessions receive stable Agent-scoped native conversations',
       'accepted submission idempotency survives reload',
       'every accepted native event advances conversation activity',
       'prompt scope does not cross Agents',
