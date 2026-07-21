@@ -320,6 +320,7 @@ const nativeSessionEvents = new Set([
   'message.delta',
   'message.complete',
   'assistant.delta',
+  'assistant.live_input',
   'processing.started',
   'processing.completed',
   'prompt.requested',

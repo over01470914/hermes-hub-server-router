@@ -106,6 +106,22 @@ assert.equal(events[1]?.event, 'message.delta')
 assert.equal(socketA.readyState, 1)
 
 socketA.receive({
+  type: 'session_event',
+  eventId: 'evt_live_input_aaaaaaaa',
+  gatewayId: 'gw_native_a',
+  hermesAgentId: 'agent_native_a',
+  laneId: 'lane_aaaaaaaa',
+  sessionId: 'session_native_a',
+  submissionId: 'sub_aaaaaaaa',
+  event: 'assistant.live_input',
+  data: { messageId: 'live-input:sub_aaaaaaaa', text: 'current agent output' },
+  sentAt: Date.now(),
+})
+assert.equal(events.length, 3)
+assert.equal(events[2]?.event, 'assistant.live_input')
+assert.equal(socketA.readyState, 1)
+
+socketA.receive({
   type: 'session_submit_ack',
   id: sent.id,
   requestType: 'session_submit',
@@ -166,6 +182,7 @@ console.log(JSON.stringify({
     'native submission is routed only to the selected Agent Gateway',
     'unsolicited native session events are accepted through the lane validator',
     'typed native message deltas preserve the Gateway connection',
+    'transient assistant live input preserves the Gateway connection',
     'native acknowledgement returns the Hermes session id',
     'versioned runtime snapshots are requested separately, cached, and redacted by the Router',
     'Gateway disconnect produces an ambiguous result and no retry',
