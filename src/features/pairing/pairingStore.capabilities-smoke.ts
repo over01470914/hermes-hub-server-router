@@ -11,6 +11,12 @@ const featureCapabilities = [
   'kanban:execute'
 ]
 
+const defaultChatCapabilities = [
+  'sessions:list',
+  'messages:read',
+  'chat:run'
+]
+
 function createStore(): InMemoryPairingStore {
   return new InMemoryPairingStore(
     'pairing-capability-smoke-secret',
@@ -30,6 +36,11 @@ function assertFeatureDefaultDeny(capabilities: string[]): void {
 
 const missingStore = createStore()
 const missing = missingStore.create({ user: 'missing-capabilities' })
+assert.deepEqual(
+  missing.capabilities,
+  defaultChatCapabilities,
+  'all currently supported chat capabilities are granted by default'
+)
 assertFeatureDefaultDeny(missing.capabilities)
 
 const emptyStore = createStore()
@@ -37,6 +48,7 @@ const empty = emptyStore.create({
   user: 'empty-capabilities',
   capabilities: []
 })
+assert.deepEqual(empty.capabilities, defaultChatCapabilities)
 assertFeatureDefaultDeny(empty.capabilities)
 
 const explicitStore = createStore()
@@ -74,11 +86,11 @@ assert.equal(
 )
 assert.match(pathRequest.prompt, /npm install -g @over01470914\/hermes-hub-gateway@latest/)
 assert.match(pathRequest.prompt, /hermes-hub-gateway pair --runtime hermes --router "https:\/\/router\.example\.test\/router-prefix"/)
-assert.match(pathRequest.prompt, /Use the official CLI below\. Execute the install command, then run pair once/)
+assert.match(pathRequest.prompt, /Run the official CLI once/)
 assert.match(pathRequest.prompt, /request native approval for that exact command/)
 assert.match(pathRequest.prompt, /Gateway restart required — restart Hermes Gateway once from the Client/)
 assert.match(pathRequest.prompt, /Never run `hermes gateway restart`/)
-assert.match(pathRequest.prompt, /Expires at \(UTC\): \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/)
+assert.doesNotMatch(pathRequest.prompt, /Expires at \(UTC\):|Capabilities:/)
 assert.doesNotMatch(pathRequest.prompt, /new uniquely named \.mjs helper/)
 assert.doesNotMatch(pathRequest.prompt, /<verified-installer-path>|HERMES_COMMAND|HERMES_HUB_AGENT_APPROVAL_TOKEN/)
 assert.doesNotMatch(pathRequest.prompt, /Host time zone|Pair window|hermes skills install|hermes-hub-gateway doctor|Allow normal host permissions|npx/)

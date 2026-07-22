@@ -309,26 +309,18 @@ export function buildGatewayEnrollmentTicket(secret: string, record: PairingRequ
 
 export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicket = ''): string {
   const router = record.routerUrl.replace(/\/$/, '')
-  const expiresAt = new Date(record.expiresAt * 1000).toISOString()
   const enrollmentArgument = enrollmentTicket
     ? ` --enrollment-ticket "${enrollmentTicket}"`
     : ''
   return [
     'Hermes Hub Gateway pairing request',
     '',
-    'Use the official CLI below. Execute the install command, then run pair once. Return only the CLI output.',
-    `Router: ${router}`,
-    `Request ID: ${record.requestId}`,
-    `Expires at (UTC): ${expiresAt}`,
-    `Capabilities: ${record.capabilities.join(', ')}`,
-    '',
-    '1. Install or update the official CLI:',
+    'Run the official CLI once:',
     '   npm install -g @over01470914/hermes-hub-gateway@latest',
     '',
-    '2. Run pair once:',
     `   hermes-hub-gateway pair --runtime hermes --router "${router}" --request-id "${record.requestId}"${enrollmentArgument}`,
     '',
-    'If either command needs terminal or network permission, request native approval for that exact command. Do not request or expose secrets.',
+    'If permission is needed, request native approval for that exact command. Do not expose secrets.',
     'After pair returns the 8-digit code, return it to the Client and state: Gateway restart required — restart Hermes Gateway once from the Client.',
     'Never run `hermes gateway restart`, stop Hermes Gateway, uninstall the plugin, or manage a service from this pairing task.',
   ].join('\n')
@@ -672,7 +664,7 @@ export class InMemoryPairingStore {
   private requireLive(requestId: string): PairingRequestRecord {
     const record = this.records.get(requestId)
     if (!record) throw new Error('Pairing request not found')
-    if (record.expiresAt < this.nowSeconds()) throw new Error('Pairing request expired')
+    if (record.expiresAt < this.nowSeconds()) throw new Error('Pairing request is no longer available')
     return record
   }
 
