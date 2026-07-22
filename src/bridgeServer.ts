@@ -26,6 +26,11 @@ import {
   gatewayPluginNpmPackage,
   gatewayPluginRepositoryUrl,
 } from './features/gateway/gatewayPluginSource.js'
+import {
+  AGENT_FEATURE_GATEWAY_CONTRACT_VERSION,
+  agentFeatureGatewayAvailable,
+  type AgentFeature,
+} from './features/gateway/agentFeatureCapability.js'
 import { GatewayRegistry, type GatewayActivationReservation, type GatewayRpcResponse } from './features/gateway/gatewayRegistry.js'
 import { HermesGatewayRepository } from './features/gateway/hermesGatewayRepository.js'
 import { PairingRateLimiter, type PairingRateLimitRule } from './features/pairing/pairingRateLimiter.js'
@@ -736,7 +741,6 @@ function requireRealtimePayload(request: IncomingMessage) {
   return verifyBridgeToken(token, config)
 }
 
-type AgentFeature = 'cron' | 'kanban'
 type AgentFeaturePermission = 'read' | 'write' | 'execute'
 
 function hasAgentFeaturePermission(
@@ -964,26 +968,13 @@ async function agentFeatureAvailable(
   const now = Date.now()
   const cached = agentFeatureProbeCache.get(key)
   if (cached && cached.expiresAt > now) return cached.available
-  const upstreamPath = feature === 'cron' ? 'api/jobs' : 'api/kanban/boards'
-  try {
-    const proxied = await proxyViaGateway(payload, upstreamPath)
-    const status = proxiedStatus(proxied)
-    const probePayload = status >= 200 && status < 300
-      ? asRecord(jsonPayloadFromProxied(proxied))
-      : null
-    const explicitlyUnavailable = feature === 'cron' && probePayload?.cron_unavailable === true
-    const available = status >= 200 && status < 300 && !explicitlyUnavailable
-    agentFeatureProbeCache.set(key, { available, expiresAt: now + 15_000 })
-    return available
-  } catch (error) {
-    logRouter('warn', 'Agent feature capability probe failed', {
-      feature,
-      hermesAgentId,
-      errorCategory: error instanceof Error ? error.name : 'unknown'
-    })
-    agentFeatureProbeCache.set(key, { available: false, expiresAt: now + 5_000 })
-    return false
-  }
+
+  // Do not use a feature-shaped HTTP probe as evidence of a public contract:
+  // it could be a WebUI/private route. The Gateway hello is the only authority
+  // for host capabilities and is bound to this Hermes Agent identity.
+  const available = agentFeatureGatewayAvailable(hermesGateways.get(hermesAgentId), feature)
+  agentFeatureProbeCache.set(key, { available, expiresAt: now + (available ? 15_000 : 5_000) })
+  return available
 }
 
 async function handleKanbanBridge(
@@ -2210,6 +2201,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const sessionResourcesAvailable = gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions')
     sendJson(response, 200, {
       protocol: 'hermes-hub-bridge/v2',
+      featureCapabilityContractVersion: AGENT_FEATURE_GATEWAY_CONTRACT_VERSION,
       features: {
         sessions: {
           rename: sessionResourcesAvailable,

@@ -14,7 +14,7 @@
     "clear-approval-token": "node router-local-env.mjs clear-approval-token",
     "pair-gateway": "node router-local-env.mjs pair-gateway",
     "check": "tsc -p tsconfig.json --pretty false",
-    "smoke": "node router-local-env.smoke.mjs && tsx src/features/pairing/pairingStore.capabilities-smoke.ts",
+    "smoke": "node router-local-env.smoke.mjs && tsx src/features/pairing/pairingStore.capabilities-smoke.ts && tsx src/features/gateway/agentFeatureCapability.smoke.ts && tsx src/features/cron/cronBridge.smoke.ts && tsx src/features/kanban/kanbanBridgeAdapter.smoke.ts",
     "test": "pnpm run check && pnpm run smoke"
   },
   "dependencies": {

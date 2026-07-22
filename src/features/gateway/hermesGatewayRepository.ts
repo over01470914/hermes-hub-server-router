@@ -38,6 +38,12 @@ export function requiredGatewayCapability(payload: GatewayRpcRequest): string | 
   if (path === '/api/session/usage') return 'sessions.usage'
   if (path === '/api/model/options' || path === '/v1/models') return 'models'
   if (path === '/api/jobs' || path.startsWith('/api/jobs/')) return 'cron'
+  if (path === '/api/kanban/boards' || path === '/api/kanban/board') return 'kanban.read'
+  if (/^\/api\/kanban\/tasks\/[^/]+\/(block|unblock)$/.test(path)) return 'kanban.write.block'
+  if (path.startsWith('/api/kanban/tasks/')) {
+    return (payload.method || 'GET').toUpperCase() === 'GET' ? 'kanban.read' : 'kanban.write.draft'
+  }
+  if (path === '/api/kanban/tasks') return 'kanban.write.draft'
   if (path === '/v1/capabilities' || path === '/v1/health' || path === '/health') return 'health'
   if (path !== '/api/ws') return null
 
