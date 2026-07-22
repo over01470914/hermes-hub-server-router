@@ -686,6 +686,21 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   return JSON.parse(body.toString('utf8')) as Record<string, unknown>
 }
 
+async function readAttachmentJson(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const body = await readBody(request, 25 * 1024 * 1024)
+  if (body.length === 0) throw Object.assign(new Error('Attachment body is required'), { code: 'validation_error', statusCode: 400 })
+  try {
+    const parsed = JSON.parse(body.toString('utf8')) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Attachment body must be an object')
+    }
+    return parsed as Record<string, unknown>
+  } catch (error) {
+    if ((error as { statusCode?: unknown }).statusCode) throw error
+    throw Object.assign(new Error('Attachment body must be valid JSON'), { code: 'validation_error', statusCode: 400 })
+  }
+}
+
 function gatewayRpcBody(method: string, params: Record<string, unknown>, timeoutMs?: number): Buffer {
   return Buffer.from(JSON.stringify({ method, params, ...(timeoutMs ? { timeoutMs } : {}) }), 'utf8')
 }
@@ -1604,11 +1619,20 @@ async function handleNativeSessionMessage(
     ? input.conversationId.trim()
     : undefined
   const text = typeof input.text === 'string' ? input.text : ''
+  const attachmentIds = Array.isArray(input.attachmentIds)
+    ? input.attachmentIds
+    : []
   if (!/^sub_[A-Za-z0-9._:-]{8,191}$/.test(submissionId)) {
     throw Object.assign(new Error('submissionId is invalid'), { code: 'validation_error', statusCode: 400 })
   }
-  if (!text.trim()) {
-    throw Object.assign(new Error('text is required'), { code: 'validation_error', statusCode: 400 })
+  if (attachmentIds.length > 10 || attachmentIds.some(id => typeof id !== 'string' || !/^att_[A-Za-z0-9._:-]{8,191}$/.test(id))) {
+    throw Object.assign(new Error('attachmentIds is invalid'), { code: 'validation_error', statusCode: 400 })
+  }
+  if (new Set(attachmentIds).size !== attachmentIds.length) {
+    throw Object.assign(new Error('attachmentIds contains duplicates'), { code: 'validation_error', statusCode: 400 })
+  }
+  if (!text.trim() && attachmentIds.length === 0) {
+    throw Object.assign(new Error('text or attachment is required'), { code: 'validation_error', statusCode: 400 })
   }
   if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) {
     throw Object.assign(new Error('Session message is too large'), { code: 'body_too_large', statusCode: 413 })
@@ -1651,6 +1675,7 @@ async function handleNativeSessionMessage(
         submissionId,
         text,
         deviceId: payload.deviceId,
+        attachmentIds,
       },
       10_000,
     )
@@ -1710,6 +1735,70 @@ async function handleNativeSessionMessage(
     }
     throw error
   }
+}
+
+function attachmentDataUrl(input: Record<string, unknown>): {
+  filename: string
+  mimeType: string
+  dataBase64: string
+} {
+  const filename = typeof input.path === 'string' ? input.path.trim() : ''
+  const dataUrl = typeof input.data_url === 'string' ? input.data_url.trim() : ''
+  if (!filename || filename.length > 255 || /[\\/\x00]/.test(filename)) {
+    throw Object.assign(new Error('Attachment filename is invalid'), { code: 'validation_error', statusCode: 400 })
+  }
+  const match = dataUrl.match(/^data:([A-Za-z0-9!#$&^_.+\-]+\/[A-Za-z0-9!#$&^_.+\-]+);base64,([A-Za-z0-9+/]*={0,2})$/)
+  if (!match || match[2].length === 0 || match[2].length % 4 !== 0) {
+    throw Object.assign(new Error('Attachment data must be a base64 data URL'), { code: 'validation_error', statusCode: 400 })
+  }
+  const decodedBytes = (match[2].length / 4) * 3 - (match[2].endsWith('==') ? 2 : match[2].endsWith('=') ? 1 : 0)
+  if (decodedBytes <= 0 || decodedBytes > 12 * 1024 * 1024) {
+    throw Object.assign(new Error('Attachment is too large'), { code: 'attachment_too_large', statusCode: 413 })
+  }
+  return { filename, mimeType: match[1].toLowerCase(), dataBase64: match[2] }
+}
+
+async function handleBridgeAttachmentUpload(
+  request: IncomingMessage,
+  response: ServerResponse,
+  payload: BridgeTokenPayload,
+  pathname: string,
+): Promise<boolean> {
+  if (pathname !== '/bridge/attachments') return false
+  if (request.method !== 'POST') {
+    sendJson(response, 405, { error: 'Attachment endpoint requires POST', code: 'method_not_allowed' })
+    return true
+  }
+  requireGatewayBoundBridge(payload)
+  const input = attachmentDataUrl(await readAttachmentJson(request))
+  const attachmentId = `att_${randomUUID()}`
+  const proxied = await proxyViaGateway(payload, '/api/ws', {
+    method: 'POST',
+    body: gatewayRpcBody('attachment.stage', {
+      attachmentId,
+      deviceId: payload.deviceId,
+      filename: input.filename,
+      mimeType: input.mimeType,
+      dataBase64: input.dataBase64,
+    }),
+    contentType: 'application/json',
+    timeoutMs: 30_000,
+    sourceHeaders: request.headers,
+  })
+  const status = proxiedStatus(proxied)
+  if (status < 200 || status >= 300) {
+    sendJson(response, status, { error: 'Attachment staging failed', code: 'attachment_stage_failed' })
+    return true
+  }
+  const result = jsonPayloadFromProxied(proxied)
+  const attachment = result && typeof result === 'object' && !Array.isArray(result)
+    ? (result as Record<string, unknown>).attachment
+    : undefined
+  if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) {
+    throw Object.assign(new Error('Gateway returned an invalid attachment reference'), { code: 'invalid_upstream_response', statusCode: 502 })
+  }
+  sendJson(response, 201, { attachment })
+  return true
 }
 
 async function handleNativePromptResponse(
@@ -2213,10 +2302,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           branch: sessionResourcesAvailable,
         },
         attachments: {
-          // No public Gateway attachment capability exists yet. Do not proxy a
-          // WebUI/private host path merely because a client asks for one.
+          // Attachment staging is native Gateway media caching, not a WebUI
+          // file API. A pairing token is still required for every upload.
           read: false,
-          write: false,
+          write: gatewayAdvertisesCapability(payload.hermesAgentId, 'attachments.write'),
         },
         cron: {
           read: cronAvailable && hasAgentFeaturePermission(payload, 'cron', 'read'),
@@ -2235,6 +2324,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (await handleCronBridge(request, response, payload, pathname, url)) return
   if (await handleKanbanBridge(request, response, payload, pathname, search)) return
+  if (await handleBridgeAttachmentUpload(request, response, payload, pathname)) return
 
   if (pathname === '/bridge/bootstrap' && request.method === 'GET') {
     await handleBridgeBootstrap(request, response, payload, url)

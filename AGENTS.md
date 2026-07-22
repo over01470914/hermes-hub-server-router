@@ -50,5 +50,5 @@ smoke/log evidence showing event names are preserved end to end:
 
 ```bash
 pnpm smoke:router-contract
-pnpm hermes-hub-gateway:test
+pnpm gateway:test
 ```

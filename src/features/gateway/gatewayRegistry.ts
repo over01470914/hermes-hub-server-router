@@ -43,6 +43,7 @@ export interface GatewaySessionSubmit {
   submissionId: string
   text: string
   deviceId: string
+  attachmentIds?: string[]
 }
 
 export interface GatewayPromptResponse {
@@ -928,6 +929,7 @@ export class GatewayRegistry {
         submissionId: payload.submissionId,
         text: payload.text,
         deviceId: payload.deviceId,
+        ...(payload.attachmentIds?.length ? { attachmentIds: payload.attachmentIds } : {}),
       },
       { submissionId: payload.submissionId },
       timeoutMs,

@@ -111,7 +111,7 @@ From the monorepo root:
 
 ```powershell
 pnpm server:check
-pnpm hermes-hub-gateway:test
+pnpm gateway:test
 pnpm smoke:router-contract
 pnpm smoke:mock-hub
 ```

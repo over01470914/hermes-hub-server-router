@@ -49,6 +49,7 @@ export function requiredGatewayCapability(payload: GatewayRpcRequest): string | 
 
   const method = rpcMethod(payload)
   if (method === 'model.options') return 'models'
+  if (method === 'attachment.stage') return 'attachments.write'
   if (method === 'session.usage' || method === 'session.context_breakdown') return 'sessions.usage'
   return null
 }
