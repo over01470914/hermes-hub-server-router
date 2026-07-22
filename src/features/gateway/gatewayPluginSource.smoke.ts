@@ -12,13 +12,13 @@ assert.equal(
 )
 assert.deepEqual(gatewayPluginNpmPackage, {
   name: '@over01470914/hermes-hub-gateway',
-  version: '0.4.9',
-  runtimeManifestSha256: '0cf290dbcacc062cf0ea50fe76485677fe440d320c0a437cdf33a31edbb3dfe8',
+  version: '0.4.12',
+  runtimeManifestSha256: 'd5d4e48ac852cc20f966f4ebbc7a00f4530beda2bd09dea780a764fbf233c50c',
 })
 assert.deepEqual(gatewayPluginReleaseArtifact, {
   packageName: '@over01470914/hermes-hub-gateway',
-  packageVersion: '0.4.9',
-  runtimeManifestSha256: '0cf290dbcacc062cf0ea50fe76485677fe440d320c0a437cdf33a31edbb3dfe8',
+  packageVersion: '0.4.12',
+  runtimeManifestSha256: 'd5d4e48ac852cc20f966f4ebbc7a00f4530beda2bd09dea780a764fbf233c50c',
 })
 
 console.log('Gateway plugin npm distribution metadata smoke passed.')
