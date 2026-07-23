@@ -7,7 +7,7 @@ import type {
   GatewayState,
 } from './gatewayRegistry.js'
 import { GatewayRegistry } from './gatewayRegistry.js'
-import { HermesGatewayRepository } from './hermesGatewayRepository.js'
+import { HermesGatewayRepository, requiredGatewayCapability } from './hermesGatewayRepository.js'
 
 const hermesAgentId = 'agent_gateway_only_smoke'
 
@@ -68,6 +68,27 @@ function rpc(method: string, params: Record<string, unknown> = {}): GatewayRpcRe
     path: '/api/ws',
     bodyBase64: Buffer.from(JSON.stringify({ method, params })).toString('base64'),
   }
+}
+
+assert.equal(
+  requiredGatewayCapability({ method: 'GET', path: '/api/model/options?refresh=1&probe=1' }),
+  'models.probe',
+)
+assert.equal(requiredGatewayCapability(rpc('model.options', { probe: true })), 'models.probe')
+assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/model/options' }), 'models')
+
+{
+  const gateway = new FakeRegistry(state(['models.probe']))
+  const connections = repository(gateway)
+  await connections.request(hermesAgentId, {
+    method: 'GET',
+    path: '/api/model/options?refresh=1&probe=1',
+  })
+  assert.equal(gateway.requestCalls, 1)
+  await assert.rejects(
+    connections.request(hermesAgentId, { method: 'GET', path: '/api/model/options' }),
+    /required capability: models/,
+  )
 }
 
 {

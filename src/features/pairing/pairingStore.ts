@@ -315,11 +315,10 @@ export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicke
   return [
     'Hermes Hub Gateway pairing request',
     '',
-    'Run the official CLI once:',
-    '   npm install -g @over01470914/hermes-hub-gateway@latest',
-    '',
+    'Run the installed Hermes Hub Gateway CLI once:',
     `   hermes-hub-gateway pair --runtime hermes --router "${router}" --request-id "${record.requestId}"${enrollmentArgument}`,
     '',
+    'A Router or Gateway version/SHA difference does not block pairing. Update the Gateway only if it is missing or the feature you need is unavailable.',
     'If permission is needed, request native approval for that exact command. Do not expose secrets.',
     'After pair returns the 8-digit code, return it to the Client and state: Gateway restart required — restart Hermes Gateway once from the Client.',
     'Never run `hermes gateway restart`, stop Hermes Gateway, uninstall the plugin, or manage a service from this pairing task.',

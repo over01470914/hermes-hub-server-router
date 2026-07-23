@@ -20,23 +20,45 @@ function normalizedPath(path: string): string {
   return `/${path.replace(/^\/+/, '').split('?')[0]}`
 }
 
-function rpcMethod(payload: GatewayRpcRequest): string {
-  if (normalizedPath(payload.path) !== '/api/ws' || !payload.bodyBase64) return ''
+function rpcPayload(payload: GatewayRpcRequest): Record<string, unknown> | null {
+  if (normalizedPath(payload.path) !== '/api/ws' || !payload.bodyBase64) return null
   try {
     const parsed = JSON.parse(Buffer.from(payload.bodyBase64, 'base64').toString('utf8')) as unknown
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return ''
-    const method = (parsed as Record<string, unknown>).method
-    return typeof method === 'string' ? method.trim() : ''
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    return parsed as Record<string, unknown>
   } catch {
-    return ''
+    return null
   }
+}
+
+function rpcMethod(payload: GatewayRpcRequest): string {
+  const method = rpcPayload(payload)?.method
+  return typeof method === 'string' ? method.trim() : ''
+}
+
+function enabledFlag(value: unknown): boolean {
+  if (value === true) return true
+  return typeof value === 'string' && ['1', 'true', 'yes'].includes(value.trim().toLowerCase())
+}
+
+function modelProbeRequested(payload: GatewayRpcRequest): boolean {
+  const path = normalizedPath(payload.path)
+  if (path === '/api/model/options') {
+    const query = payload.path.split('?', 2)[1]
+    return enabledFlag(query ? new URLSearchParams(query).get('probe') : null)
+  }
+  if (path !== '/api/ws') return false
+  const params = rpcPayload(payload)?.params
+  return Boolean(params && typeof params === 'object' && !Array.isArray(params)
+    && enabledFlag((params as Record<string, unknown>).probe))
 }
 
 export function requiredGatewayCapability(payload: GatewayRpcRequest): string | null {
   const path = normalizedPath(payload.path)
   if (path === '/api/sessions' || path.startsWith('/api/sessions/')) return 'sessions'
   if (path === '/api/session/usage') return 'sessions.usage'
-  if (path === '/api/model/options' || path === '/v1/models') return 'models'
+  if (path === '/api/model/options') return modelProbeRequested(payload) ? 'models.probe' : 'models'
+  if (path === '/v1/models') return 'models'
   if (path === '/api/jobs' || path.startsWith('/api/jobs/')) return 'cron'
   if (path === '/api/kanban/boards' || path === '/api/kanban/board') return 'kanban.read'
   if (/^\/api\/kanban\/tasks\/[^/]+\/(block|unblock)$/.test(path)) return 'kanban.write.block'
@@ -48,7 +70,7 @@ export function requiredGatewayCapability(payload: GatewayRpcRequest): string | 
   if (path !== '/api/ws') return null
 
   const method = rpcMethod(payload)
-  if (method === 'model.options') return 'models'
+  if (method === 'model.options') return modelProbeRequested(payload) ? 'models.probe' : 'models'
   if (method === 'attachment.stage') return 'attachments.write'
   if (method === 'session.usage' || method === 'session.context_breakdown') return 'sessions.usage'
   return null

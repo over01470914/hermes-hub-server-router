@@ -84,9 +84,11 @@ runtime and deterministic pairing core. `/router/health` publishes the package
 name, version, and runtime manifest SHA-256. The Router does not serve
 executable Gateway runtime files.
 
-The pairing prompt uses the concise npm CLI flow. The CLI verifies its bundled
-release policy and runtime manifest, performs Hermes readiness checks, runs one
-installer transaction, and returns the Router-issued 8-digit code. It never
+The pairing prompt uses the concise npm CLI flow. The CLI verifies the
+integrity of its installed runtime, performs Hermes readiness checks, runs one
+installer transaction, and returns the Router-issued 8-digit code. Router
+release metadata is advisory and does not reject an older Gateway; negotiated
+capabilities determine feature availability. It never
 restarts the running Hermes Gateway: after the Client claims the code, the
 Client must request one Gateway restart. Prompt text does not grant terminal
 access; Hermes must request native approval for the exact command.
