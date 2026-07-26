@@ -402,6 +402,33 @@ export function routerListenerPid(port) {
   return undefined
 }
 
+export function setDebugPairingCode(path, pairingCode, options = {}) {
+  if (!/^\d{8}$/.test(pairingCode)) {
+    throw new Error('Debug pairing code must be exactly 8 digits.')
+  }
+  ensureRouterEnvFile(path, options)
+  hardenPrivateEnvFile(path, options)
+  const keys = new Set([
+    'HERMES_HUB_ROUTER_HOST',
+    'HERMES_HUB_ROUTER_URL',
+    'HERMES_HUB_DEBUG_BUILD',
+    'HERMES_HUB_DEBUG_PAIRING_CODE',
+  ])
+  const retained = envLines(readFileSync(path, 'utf8')).filter(line => {
+    const separator = line.indexOf('=')
+    return separator <= 0 || !keys.has(line.slice(0, separator))
+  })
+  while (retained.length > 0 && retained.at(-1) === '') retained.pop()
+  retained.push(
+    'HERMES_HUB_ROUTER_HOST=127.0.0.1',
+    'HERMES_HUB_ROUTER_URL=http://127.0.0.1:4320',
+    'HERMES_HUB_DEBUG_BUILD=debug-testing',
+    `HERMES_HUB_DEBUG_PAIRING_CODE=${pairingCode}`,
+  )
+  writePrivateEnvFile(path, `${retained.join('\n')}\n`, options)
+  return { path }
+}
+
 async function terminateRouterProcess(pid) {
   let exited = false
   try {
@@ -630,6 +657,7 @@ function usage() {
     '  node router-local-env.mjs stop [--router-env <path>] [--pairing-config <path>]',
     '  node router-local-env.mjs rotate-approval-token [--router-env <path>] [--pairing-config <path>]',
     '  node router-local-env.mjs clear-approval-token [--router-env <path>] [--pairing-config <path>]',
+    '  node router-local-env.mjs set-debug-pairing --code <8-digits> [--router-env <path>]',
     '  node router-local-env.mjs pair-gateway --installer <verified-installer-path> --request-id <pair-id> --enrollment-ticket <ticket> [--router <loopback-url>] [--source-base <Router package mirror>] [--router-env <path>] [--pairing-config <path>]',
     '',
     'Hermes Hub monorepo usage:',
@@ -638,6 +666,7 @@ function usage() {
     '  node apps/hermes-hub-server-router/router-local-env.mjs stop [--router-env <path>] [--pairing-config <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs rotate-approval-token [--router-env <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs clear-approval-token [--router-env <path>]',
+    '  node apps/hermes-hub-server-router/router-local-env.mjs set-debug-pairing --code <8-digits> [--router-env <path>]',
     '  pnpm router:pair-gateway -- --installer <verified-installer-path> --request-id <pair-id> --enrollment-ticket <ticket> [--router <loopback-url>] [--source-base <Router package mirror>]',
     '',
     'The token is generated once, never printed, and rotated or cleared only by explicit local commands.',
@@ -719,6 +748,15 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         ? `Router approval token cleared from ${result.path}; run init or run to generate a new value.\n`
         : `Router environment at ${result.path} has no approval token to clear.\n`,
     )
+    return
+  }
+  if (command === 'set-debug-pairing') {
+    const result = setDebugPairingCode(
+      envFile,
+      textOption(parsed, 'code'),
+      localOptions,
+    )
+    process.stdout.write(`Loopback-only debug pairing configured in ${result.path}; restart Router to apply it.\n`)
     return
   }
   if (command === 'stop') {

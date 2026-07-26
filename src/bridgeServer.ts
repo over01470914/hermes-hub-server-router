@@ -118,6 +118,26 @@ interface DebugGatewayConfig {
   expiresAt: number
 }
 
+function isLoopbackHostname(value: string): boolean {
+  const hostname = value.trim().toLowerCase()
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]'
+}
+
+function readDebugPairingCode(): string | null {
+  if (process.env.HERMES_HUB_DEBUG_BUILD !== 'debug-testing') return null
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('Debug pairing code is unavailable when NODE_ENV=production')
+  }
+  const publicHostname = new URL(routerUrl).hostname
+  if (!isLoopbackHostname(host) || !isLoopbackHostname(publicHostname)) {
+    throw new Error('Debug pairing code requires a loopback Router host and URL')
+  }
+  const pairingCode = process.env.HERMES_HUB_DEBUG_PAIRING_CODE
+  if (!pairingCode) return null
+  if (!/^\d{8}$/.test(pairingCode)) throw new Error('Debug pairing code must be 8 digits')
+  return pairingCode
+}
+
 function readDebugGatewayConfig(): DebugGatewayConfig | null {
   const enabled = process.env.HERMES_HUB_DEBUG_GATEWAY === '1'
   if (!enabled) return null
@@ -169,7 +189,11 @@ const pairingStore = new InMemoryPairingStore(
   loadPairingRecords(pairingStorePath),
   records => savePairingRecords(pairingStorePath, records)
 )
+const debugPairingCode = readDebugPairingCode()
 const debugGateway = readDebugGatewayConfig()
+if (debugPairingCode && debugGateway) {
+  throw new Error('Debug pairing code and debug Gateway modes cannot be enabled together')
+}
 if (debugGateway) pairingStore.ensureDebugGateway(debugGateway)
 const gatewayRegistry = new GatewayRegistry()
 const hermesGateways = new HermesGatewayRepository(gatewayRegistry)
@@ -1897,6 +1921,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
         },
       },
       debugGateway: { enabled: Boolean(debugGateway) },
+      debugPairingCode: { enabled: Boolean(debugPairingCode) },
     })
     return true
   }
@@ -2025,6 +2050,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
         gatewayToken: debugGateway.gatewayToken,
       })
       : pairingStore.approve(requestId, {
+        codeGenerator: debugPairingCode ? () => debugPairingCode : undefined,
         hermesAgentId: typeof input.hermesAgentId === 'string' ? input.hermesAgentId : undefined,
         gatewayId: typeof input.gatewayId === 'string' ? input.gatewayId : undefined,
         gatewayToken: typeof input.gatewayToken === 'string' ? input.gatewayToken : undefined,
@@ -2063,6 +2089,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
     const enrollmentTicket = headerValue(request, 'x-hermes-hub-gateway-enrollment')
     const requestId = typeof input.requestId === 'string' ? input.requestId : ''
     const approval = pairingStore.enroll(requestId, enrollmentTicket, {
+      codeGenerator: debugPairingCode ? () => debugPairingCode : undefined,
       hermesAgentId: typeof input.hermesAgentId === 'string' ? input.hermesAgentId : undefined,
       gatewayId: typeof input.gatewayId === 'string' ? input.gatewayId : undefined,
       gatewayToken: typeof input.gatewayToken === 'string' ? input.gatewayToken : undefined,
@@ -2088,14 +2115,17 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
   if (pathname === '/router/pairing/claim' && request.method === 'POST') {
     assertPairingRateAllowed(request, 'claim')
     const input = await readJson(request)
-    const requestId = typeof input.requestId === 'string' ? input.requestId.trim() : ''
+    const code = typeof input.code === 'string' ? input.code.replace(/\D/g, '').slice(0, 8) : ''
+    let requestId = typeof input.requestId === 'string' ? input.requestId.trim() : ''
+    if (!requestId && debugGateway && code === debugGateway.pairingCode) {
+      requestId = debugGateway.requestId
+    }
     if (!requestId) {
       throw Object.assign(new Error('Pairing claim requires requestId'), {
         statusCode: 400,
         code: 'pairing_request_id_required',
       })
     }
-    const code = typeof input.code === 'string' ? input.code.replace(/\D/g, '').slice(0, 8) : ''
     let activationReservation: GatewayActivationReservation | undefined
     const reserveGatewayActivation = (claim: PairingClaim, gatewayId: string): void => {
       try {
