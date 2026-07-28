@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomInt } from 'node:crypto'
 import { once } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -63,7 +63,7 @@ function writeLinuxProcListenerFixture(procRoot, pid, port, inode) {
     `   0: 0100007F:${portHex} 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 ${inode}`,
     '',
   ].join('\n'))
-  symlinkSync(`socket:[${inode}]`, join(procRoot, String(pid), 'fd', '3'))
+  writeFileSync(join(procRoot, String(pid), 'fd', '3'), '')
 }
 
 try {
@@ -74,6 +74,7 @@ try {
       platform: 'linux',
       procRoot: procFixtureRoot,
       commandRunner: () => ({ status: 1, stdout: '', stderr: '' }),
+      readlink: () => 'socket:[987654]',
     }),
     417,
     'Linux listener discovery must fall back to procfs when container images omit lsof, fuser, and ss',

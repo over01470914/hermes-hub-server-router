@@ -71,6 +71,21 @@ identity before stopping it, and never kills by process name. Environment
 writes are atomic; POSIX permissions are `0600`, and Windows ACL inheritance is
 removed where supported.
 
+## Remote push
+
+JPush delivery is enabled only when all three protected Router values are
+present: `HERMES_HUB_PUSH_STORAGE_KEY` (at least 32 non-whitespace characters),
+`HERMES_HUB_JPUSH_APP_KEY`, and `HERMES_HUB_JPUSH_MASTER_SECRET`. The standalone
+installer generates the storage key. AppKey and Master Secret must be supplied
+by the deployment environment and must never be committed, printed, or passed
+in command arguments.
+
+The Router encrypts provider registration ids at rest and derives Agent/device
+identity from each bridge claim. It pushes only generic assistant-reply,
+action-needed, and error alerts. Session titles, message/prompt/error text,
+bridge tokens, provider credentials, and registration ids are excluded from
+logs and payload text.
+
 ## Pairing and release metadata
 
 Each device receives a bridge token scoped to one stable `hermesAgentId`.
@@ -113,6 +128,7 @@ From the monorepo root:
 
 ```powershell
 pnpm server:check
+pnpm smoke:push-notifications
 pnpm gateway:test
 pnpm smoke:router-contract
 pnpm smoke:mock-hub

@@ -355,7 +355,7 @@ async function waitForProcessExit(pid, timeoutMs) {
   return !processIsRunning(pid)
 }
 
-function linuxProcListenerPid(port, procRoot) {
+function linuxProcListenerPid(port, procRoot, readLink = readlinkSync) {
   const portHex = port.toString(16).padStart(4, '0').toUpperCase()
   const socketInodes = new Set()
   for (const protocol of ['tcp', 'tcp6']) {
@@ -387,7 +387,7 @@ function linuxProcListenerPid(port, procRoot) {
       for (const descriptor of descriptors) {
         let target
         try {
-          target = readlinkSync(join(procRoot, String(pid), 'fd', descriptor))
+          target = readLink(join(procRoot, String(pid), 'fd', descriptor))
         } catch {
           continue
         }
@@ -447,7 +447,13 @@ export function routerListenerPid(port, options = {}) {
     const pid = Number(match[1])
     if (Number.isSafeInteger(pid) && pid > 0) return pid
   }
-  if (platform === 'linux') return linuxProcListenerPid(port, options.procRoot || '/proc')
+  if (platform === 'linux') {
+    return linuxProcListenerPid(
+      port,
+      options.procRoot || '/proc',
+      options.readlink || readlinkSync,
+    )
+  }
   return undefined
 }
 

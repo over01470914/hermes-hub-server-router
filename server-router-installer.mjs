@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path'
 import { createHash, randomBytes, randomInt } from 'node:crypto'
 import os from 'node:os'
 
-const VERSION = '2026-07-19.2'
+const VERSION = '2026-07-28.1'
 const DEFAULT_BASE_URL = 'https://raw.githubusercontent.com/over01470914/hermes-hub-server-router/main/'
 const DEFAULT_GATEWAY_PACKAGE_BASE_URL = 'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/main/'
 const DEFAULT_ROUTER_URL = 'https://hermes-hub.s3studio.fun'
@@ -46,21 +46,28 @@ const SERVER_FILES = [
   'src/core/http/publicRouterUrl.ts',
   'src/core/observability/routerLogger.ts',
   'src/core/persistence/privateStateFile.ts',
+  'src/core/persistence/routerStatePaths.ts',
   'src/core/protocol/bridgeProtocol.ts',
   'src/core/security/bridgeAuth.ts',
   'src/core/security/bridgePolicy.ts',
   'src/features/cron/cronBridge.ts',
   'src/features/diagnostics/diagnosticsReceipt.ts',
+  'src/features/gateway/agentFeatureCapability.ts',
   'src/features/gateway/gatewayPluginSource.ts',
   'src/features/gateway/gatewayRegistry.ts',
   'src/features/gateway/hermesGatewayRepository.ts',
   'src/features/kanban/kanbanBridgeAdapter.ts',
+  'src/features/notifications/pushDeviceRegistry.ts',
+  'src/features/notifications/pushNotificationDispatcher.ts',
+  'src/features/notifications/pushProvider.ts',
   'src/features/pairing/pairingRateLimiter.ts',
   'src/features/pairing/pairingStore.ts',
   'src/features/realtime/clientEventHub.ts',
   'src/features/realtime/pendingRealtimeFrames.ts',
   'src/features/sessions/sessionMetadata.ts',
   'src/features/sessions/sessionMetadataStore.ts',
+  'src/features/sessions/nativeConversationStore.ts',
+  'src/features/sessions/nativeSessionProjection.ts',
 ]
 const MANAGED_ENV_KEYS = new Set([
   'NODE_ENV',
@@ -70,6 +77,8 @@ const MANAGED_ENV_KEYS = new Set([
   'HERMES_HUB_DIAGNOSTICS_DIR',
   'HERMES_HUB_PAIRING_STORE_PATH',
   'HERMES_HUB_SESSION_METADATA_STORE_PATH',
+  'HERMES_HUB_NATIVE_CONVERSATION_STORE_PATH',
+  'HERMES_HUB_PUSH_DEVICE_STORE_PATH',
 ])
 
 function parseArgs(argv) {
@@ -474,7 +483,9 @@ function updateEnvFile(path, config, dryRun) {
   let hasPairingCode = false
   let hasBridgeSecret = false
   let hasAgentApprovalToken = false
+  let hasPushStorageKey = false
   let agentApprovalTokenCount = 0
+  let pushStorageKeyCount = 0
   for (const line of existing) {
     const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/)
     if (match) {
@@ -489,15 +500,25 @@ function updateEnvFile(path, config, dryRun) {
         }
         hasAgentApprovalToken = true
       }
+      if (match[1] === 'HERMES_HUB_PUSH_STORAGE_KEY') {
+        pushStorageKeyCount += 1
+        const value = line.slice('HERMES_HUB_PUSH_STORAGE_KEY='.length)
+        if (value.length < 32 || /\s/.test(value)) {
+          fail('HERMES_HUB_PUSH_STORAGE_KEY must contain at least 32 non-whitespace characters')
+        }
+        hasPushStorageKey = true
+      }
       if (MANAGED_ENV_KEYS.has(match[1])) continue
     }
     if (line.trim()) preserved.push(line)
   }
   if (agentApprovalTokenCount > 1) fail('HERMES_HUB_AGENT_APPROVAL_TOKEN appears more than once')
+  if (pushStorageKeyCount > 1) fail('HERMES_HUB_PUSH_STORAGE_KEY appears more than once')
   const additions = []
   if (!hasPairingCode) additions.push(`HERMES_HUB_PAIRING_CODE=${randomPairingCode()}`)
   if (!hasBridgeSecret) additions.push(`HERMES_HUB_BRIDGE_SECRET=${randomBytes(32).toString('hex')}`)
   if (!hasAgentApprovalToken) additions.push(`HERMES_HUB_AGENT_APPROVAL_TOKEN=${randomBytes(32).toString('hex')}`)
+  if (!hasPushStorageKey) additions.push(`HERMES_HUB_PUSH_STORAGE_KEY=${randomBytes(32).toString('hex')}`)
   additions.push(
     'NODE_ENV=production',
     `HERMES_HUB_ROUTER_URL=${config.routerUrl}`,
@@ -506,6 +527,8 @@ function updateEnvFile(path, config, dryRun) {
     `HERMES_HUB_DIAGNOSTICS_DIR=${join(config.workdir, 'diagnostics')}`,
     `HERMES_HUB_PAIRING_STORE_PATH=${join(config.workdir, 'state', 'pairing-store.json')}`,
     `HERMES_HUB_SESSION_METADATA_STORE_PATH=${join(config.workdir, 'state', 'session-metadata.json')}`,
+    `HERMES_HUB_NATIVE_CONVERSATION_STORE_PATH=${join(config.workdir, 'state', 'native-conversations.json')}`,
+    `HERMES_HUB_PUSH_DEVICE_STORE_PATH=${join(config.workdir, 'state', 'push-devices.json')}`,
   )
   const content = [...preserved, ...additions, ''].join('\n')
   if (dryRun) return log(`dry-run update env ${path}; secret values are not printed`)

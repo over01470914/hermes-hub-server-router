@@ -36,6 +36,15 @@ import { HermesGatewayRepository } from './features/gateway/hermesGatewayReposit
 import { PairingRateLimiter, type PairingRateLimitRule } from './features/pairing/pairingRateLimiter.js'
 import { InMemoryPairingStore, PAIRING_RECORD_SCHEMA_VERSION, type PairingClaim, type PairingRequestRecord } from './features/pairing/pairingStore.js'
 import { ClientEventHub } from './features/realtime/clientEventHub.js'
+import {
+  PushDeviceRegistry,
+  PUSH_DEVICE_REGISTRY_SCHEMA_VERSION,
+  normalizePreferences,
+  type EncryptedPushDeviceRecord,
+  type PushPlatform,
+} from './features/notifications/pushDeviceRegistry.js'
+import { JPushPushProvider } from './features/notifications/pushProvider.js'
+import { PushNotificationDispatcher } from './features/notifications/pushNotificationDispatcher.js'
 import { PendingRealtimeFrameBuffer } from './features/realtime/pendingRealtimeFrames.js'
 import { SessionMetadataStore } from './features/sessions/sessionMetadataStore.js'
 import { NativeConversationStore } from './features/sessions/nativeConversationStore.js'
@@ -65,6 +74,7 @@ const {
   pairingStorePath,
   sessionMetadataStorePath,
   nativeConversationStorePath,
+  pushDeviceStorePath,
 } = resolveRouterStatePaths(import.meta.url)
 const agentApprovalToken = process.env.HERMES_HUB_AGENT_APPROVAL_TOKEN || ''
 if (agentApprovalToken.length < 32) {
@@ -182,6 +192,29 @@ function savePairingRecords(path: string, records: PairingRequestRecord[]): void
   )
 }
 
+function loadPushDeviceRecords(path: string): EncryptedPushDeviceRecord[] {
+  const content = readPrivateTextFileSync(path)
+  if (content === null) return []
+  const data = JSON.parse(content) as { schemaVersion?: unknown; records?: unknown }
+  if (
+    data.schemaVersion !== PUSH_DEVICE_REGISTRY_SCHEMA_VERSION ||
+    !Array.isArray(data.records)
+  ) {
+    throw new Error('Push device store has an invalid schema and cannot be loaded safely')
+  }
+  return data.records as EncryptedPushDeviceRecord[]
+}
+
+function savePushDeviceRecords(path: string, records: EncryptedPushDeviceRecord[]): void {
+  writePrivateTextFileAtomicSync(
+    path,
+    `${JSON.stringify({
+      schemaVersion: PUSH_DEVICE_REGISTRY_SCHEMA_VERSION,
+      records,
+    }, null, 2)}\n`,
+  )
+}
+
 const pairingStore = new InMemoryPairingStore(
   config.secret,
   routerUrl,
@@ -200,6 +233,22 @@ const hermesGateways = new HermesGatewayRepository(gatewayRegistry)
 const clientEventHub = new ClientEventHub()
 const sessionMetadataStore = new SessionMetadataStore(sessionMetadataStorePath)
 const nativeConversationStore = new NativeConversationStore(nativeConversationStorePath)
+const pushStorageSecret = process.env.HERMES_HUB_PUSH_STORAGE_KEY || ''
+const pushDeviceRegistry = pushStorageSecret.length >= 32
+  ? new PushDeviceRegistry(
+    pushStorageSecret,
+    loadPushDeviceRecords(pushDeviceStorePath),
+    records => savePushDeviceRecords(pushDeviceStorePath, records),
+  )
+  : null
+const jpushProvider = new JPushPushProvider(
+  process.env.HERMES_HUB_JPUSH_APP_KEY || '',
+  process.env.HERMES_HUB_JPUSH_MASTER_SECRET || '',
+  process.env.HERMES_HUB_JPUSH_PRODUCTION !== '0',
+)
+const pushDispatcher = pushDeviceRegistry && jpushProvider.configured
+  ? new PushNotificationDispatcher(pushDeviceRegistry, jpushProvider)
+  : null
 
 gatewayRegistry.setSessionEventHandler(event => {
   const conversation = nativeConversationStore.acceptSessionEvent(
@@ -224,15 +273,31 @@ gatewayRegistry.setSessionEventHandler(event => {
     const promptId = typeof event.data.promptId === 'string' ? event.data.promptId : ''
     if (promptId) nativeConversationStore.resolvePrompt(event.hermesAgentId, promptId)
   }
+  const resolvedSessionId =
+    event.sessionId || conversation.sessionId || conversation.conversationId
   clientEventHub.publish({
     scope: `hermes-agent:${event.hermesAgentId}`,
     eventId: event.eventId,
     conversationId: conversation.conversationId,
-    sessionId: event.sessionId || conversation.sessionId,
+    sessionId: resolvedSessionId,
     submissionId: event.submissionId,
     event: event.event,
     data: event.data,
   })
+  if (pushDispatcher) {
+    void pushDispatcher.dispatch({
+      hermesAgentId: event.hermesAgentId,
+      eventId: event.eventId,
+      sessionId: resolvedSessionId,
+      event: event.event,
+      data: event.data,
+    }).catch(error => {
+      logRouter('warn', 'Push notification dispatch failed', {
+        hermesAgentId: event.hermesAgentId,
+        event: event.event,
+      }, error)
+    })
+  }
   return true
 })
 
@@ -285,6 +350,12 @@ function sendGatewayResponse(response: ServerResponse, rpc: GatewayRpcResponse):
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function booleanSetting(value: unknown, label: string): boolean | undefined {
+  if (value == null) return undefined
+  if (typeof value === 'boolean') return value
+  throw new Error(`Push preference ${label} must be boolean`)
 }
 
 function chatRunEventText(event: Record<string, unknown>): string {
@@ -2259,7 +2330,7 @@ function setCorsHeaders(request: IncomingMessage, response: ServerResponse): voi
   const allowOrigin = configuredOrigin === '*' && requestOrigin ? requestOrigin : configuredOrigin
   response.setHeader('access-control-allow-origin', allowOrigin)
   response.setHeader('access-control-allow-headers', 'authorization, content-type, x-hermes-hub-agent-approval, x-hermes-hub-client-id')
-  response.setHeader('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS')
+  response.setHeader('access-control-allow-methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
   response.setHeader('vary', 'Origin')
   if (allowOrigin !== '*') response.setHeader('access-control-allow-credentials', 'true')
 }
@@ -2300,6 +2371,88 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   const payload = requirePayload(request)
 
+  if (pathname === '/bridge/notification-devices/current') {
+    if (request.method === 'PUT') {
+      if (!pushDeviceRegistry || !jpushProvider.configured) {
+        sendJson(response, 503, {
+          error: 'Push is not configured',
+          code: 'push_not_configured',
+        })
+        return
+      }
+      const input = await readJson(request)
+      const provider = input.provider
+      const platform = input.platform
+      const registrationToken = input.registrationToken
+      const preferences = asRecord(input.preferences)
+      if (
+        provider !== 'jpush' ||
+        typeof platform !== 'string' ||
+        !['android', 'ios', 'harmony'].includes(platform) ||
+        typeof registrationToken !== 'string' ||
+        (input.preferences != null && preferences == null)
+      ) {
+        throw Object.assign(new Error('Push device registration is invalid'), {
+          statusCode: 400,
+          code: 'invalid_push_registration',
+        })
+      }
+      try {
+        pushDeviceRegistry.upsert({
+          hermesAgentId: payload.hermesAgentId,
+          deviceId: payload.deviceId,
+          provider,
+          platform: platform as PushPlatform,
+          registrationToken,
+          preferences: normalizePreferences({
+            assistantReplies: booleanSetting(
+              preferences?.assistantReplies,
+              'assistantReplies',
+            ),
+            promptRequests: booleanSetting(
+              preferences?.promptRequests,
+              'promptRequests',
+            ),
+            errors: booleanSetting(preferences?.errors, 'errors'),
+            sound: booleanSetting(preferences?.sound, 'sound'),
+            vibration: booleanSetting(preferences?.vibration, 'vibration'),
+          }),
+        })
+      } catch {
+        throw Object.assign(new Error('Push device registration is invalid'), {
+          statusCode: 400,
+          code: 'invalid_push_registration',
+        })
+      }
+      sendJson(response, 200, {
+        registered: true,
+        provider,
+        platform,
+      })
+      return
+    }
+    if (request.method === 'DELETE') {
+      if (!pushDeviceRegistry) {
+        sendJson(response, 503, {
+          error: 'Push is not configured',
+          code: 'push_not_configured',
+        })
+        return
+      }
+      const removed = pushDeviceRegistry.remove(
+        payload.hermesAgentId,
+        payload.deviceId,
+      )
+      sendJson(response, 200, { registered: false, removed })
+      return
+    }
+    sendJson(response, 405, {
+      error: 'Notification device endpoint requires PUT or DELETE',
+      code: 'method_not_allowed',
+    })
+    return
+  }
+
   if (pathname === '/bridge/auth/session' && request.method === 'GET') {
     sendJson(response, 200, {
       auth: 'valid',
@@ -2336,6 +2489,11 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           // file API. A pairing token is still required for every upload.
           read: false,
           write: gatewayAdvertisesCapability(payload.hermesAgentId, 'attachments.write'),
+        },
+        notifications: {
+          local: true,
+          push: Boolean(pushDeviceRegistry && jpushProvider.configured),
+          provider: jpushProvider.configured ? 'jpush' : null,
         },
         cron: {
           read: cronAvailable && hasAgentFeaturePermission(payload, 'cron', 'read'),
