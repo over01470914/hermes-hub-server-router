@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomInt } from 'node:crypto'
 import { once } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -54,7 +54,31 @@ async function waitFor(check, description) {
   throw new Error(`Timed out waiting for ${description}.`)
 }
 
+function writeLinuxProcListenerFixture(procRoot, pid, port, inode) {
+  mkdirSync(join(procRoot, 'net'), { recursive: true })
+  mkdirSync(join(procRoot, String(pid), 'fd'), { recursive: true })
+  const portHex = port.toString(16).padStart(4, '0').toUpperCase()
+  writeFileSync(join(procRoot, 'net', 'tcp'), [
+    '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
+    `   0: 0100007F:${portHex} 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 ${inode}`,
+    '',
+  ].join('\n'))
+  symlinkSync(`socket:[${inode}]`, join(procRoot, String(pid), 'fd', '3'))
+}
+
 try {
+  const procFixtureRoot = join(workdir, 'proc-listener-fixture')
+  writeLinuxProcListenerFixture(procFixtureRoot, 417, 47001, 987654)
+  assert.equal(
+    routerListenerPid(47001, {
+      platform: 'linux',
+      procRoot: procFixtureRoot,
+      commandRunner: () => ({ status: 1, stdout: '', stderr: '' }),
+    }),
+    417,
+    'Linux listener discovery must fall back to procfs when container images omit lsof, fuser, and ss',
+  )
+
   const defaultHermesHome = join(workdir, 'default-hermes-home')
   const defaultConfigPath = join(defaultHermesHome, 'hermes-hub', 'pairing.json')
   assert.equal(
@@ -432,7 +456,8 @@ try {
         return false
       }
     }, 'managed Router health')
-    assert.ok(routerListenerPid(managedRouterPort), 'managed Router listener PID must be discoverable')
+    const managedListenerPid = routerListenerPid(managedRouterPort)
+    assert.ok(managedListenerPid, 'managed Router listener PID must be discoverable')
     rmSync(managedRouterStatePath)
     const stopped = await stopRouterProcess(managedRouterEnvFile, {
       HERMES_HUB_ROUTER_HOST: '127.0.0.1',
@@ -441,6 +466,7 @@ try {
     })
     assert.equal(stopped.stopped, true)
     assert.equal(stopped.discovered, true)
+    assert.equal(stopped.pid, managedListenerPid)
     await waitFor(() => !existsSync(managedRouterStatePath), 'managed Router state cleanup')
   } finally {
     if (managedRouter.exitCode == null) {

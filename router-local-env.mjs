@@ -10,7 +10,9 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -353,10 +355,56 @@ async function waitForProcessExit(pid, timeoutMs) {
   return !processIsRunning(pid)
 }
 
-export function routerListenerPid(port) {
-  if (process.platform === 'win32') {
+function linuxProcListenerPid(port, procRoot) {
+  const portHex = port.toString(16).padStart(4, '0').toUpperCase()
+  const socketInodes = new Set()
+  for (const protocol of ['tcp', 'tcp6']) {
+    try {
+      const lines = readFileSync(join(procRoot, 'net', protocol), 'utf8').split(/\r?\n/)
+      for (const line of lines) {
+        const columns = line.trim().split(/\s+/)
+        if (columns.length < 10 || columns[3] !== '0A') continue
+        const localPort = columns[1]?.split(':').at(-1)?.toUpperCase()
+        if (localPort !== portHex || !/^\d+$/.test(columns[9])) continue
+        socketInodes.add(columns[9])
+      }
+    } catch {}
+  }
+  if (socketInodes.size === 0) return undefined
+
+  try {
+    const pids = readdirSync(procRoot, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && /^\d+$/.test(entry.name))
+      .map(entry => Number(entry.name))
+      .sort((left, right) => left - right)
+    for (const pid of pids) {
+      let descriptors
+      try {
+        descriptors = readdirSync(join(procRoot, String(pid), 'fd'))
+      } catch {
+        continue
+      }
+      for (const descriptor of descriptors) {
+        let target
+        try {
+          target = readlinkSync(join(procRoot, String(pid), 'fd', descriptor))
+        } catch {
+          continue
+        }
+        const match = /^socket:\[(\d+)\]$/.exec(target)
+        if (match && socketInodes.has(match[1])) return pid
+      }
+    }
+  } catch {}
+  return undefined
+}
+
+export function routerListenerPid(port, options = {}) {
+  const platform = options.platform || process.platform
+  const commandRunner = options.commandRunner || spawnSync
+  if (platform === 'win32') {
     const powershell = join(windowsSystemExecutable('WindowsPowerShell'), 'v1.0', 'powershell.exe')
-    const powershellResult = spawnSync(powershell, [
+    const powershellResult = commandRunner(powershell, [
       '-NoProfile',
       '-NonInteractive',
       '-Command',
@@ -364,7 +412,7 @@ export function routerListenerPid(port) {
     ], { encoding: 'utf8', windowsHide: true })
     const powershellPid = Number(String(powershellResult.stdout || '').trim())
     if (Number.isSafeInteger(powershellPid) && powershellPid > 0) return powershellPid
-    const result = spawnSync(windowsSystemExecutable('netstat.exe'), ['-ano', '-p', 'tcp'], {
+    const result = commandRunner(windowsSystemExecutable('netstat.exe'), ['-ano', '-p', 'tcp'], {
       encoding: 'utf8',
       windowsHide: true,
     })
@@ -379,13 +427,13 @@ export function routerListenerPid(port) {
     return undefined
   }
 
-  const lsof = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' })
+  const lsof = commandRunner('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' })
   for (const line of String(lsof.stdout || '').split(/\r?\n/)) {
     const pid = Number(line.trim())
     if (Number.isSafeInteger(pid) && pid > 0) return pid
   }
 
-  const fuser = spawnSync('fuser', ['-n', 'tcp', String(port)], { encoding: 'utf8' })
+  const fuser = commandRunner('fuser', ['-n', 'tcp', String(port)], { encoding: 'utf8' })
   const fuserOutput = `${String(fuser.stdout || '')}\n${String(fuser.stderr || '')}`
   const fuserPids = fuserOutput.match(/(?:^|\s)(\d+)(?=\s|$)/g) || []
   for (const candidate of fuserPids) {
@@ -393,12 +441,13 @@ export function routerListenerPid(port) {
     if (Number.isSafeInteger(pid) && pid > 0) return pid
   }
 
-  const ss = spawnSync('ss', ['-ltnp', `sport = :${port}`], { encoding: 'utf8' })
+  const ss = commandRunner('ss', ['-ltnp', `sport = :${port}`], { encoding: 'utf8' })
   const ssPids = String(ss.stdout || '').matchAll(/pid=(\d+)/g)
   for (const match of ssPids) {
     const pid = Number(match[1])
     if (Number.isSafeInteger(pid) && pid > 0) return pid
   }
+  if (platform === 'linux') return linuxProcListenerPid(port, options.procRoot || '/proc')
   return undefined
 }
 
