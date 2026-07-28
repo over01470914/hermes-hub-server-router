@@ -122,6 +122,22 @@ assert.equal(events[2]?.event, 'assistant.live_input')
 assert.equal(socketA.readyState, 1)
 
 socketA.receive({
+  type: 'session_event',
+  eventId: 'evt_review_summary_aaaaaa',
+  gatewayId: 'gw_native_a',
+  hermesAgentId: 'agent_native_a',
+  laneId: 'lane_aaaaaaaa',
+  sessionId: 'session_native_a',
+  submissionId: 'sub_aaaaaaaa',
+  event: 'review.summary',
+  data: { messageId: 'msg_review_aaaaaaaa', text: 'Self-improvement review: Updated memory.' },
+  sentAt: Date.now(),
+})
+assert.equal(events.length, 4)
+assert.equal(events[3]?.event, 'review.summary')
+assert.equal(socketA.readyState, 1)
+
+socketA.receive({
   type: 'session_submit_ack',
   id: sent.id,
   requestType: 'session_submit',
