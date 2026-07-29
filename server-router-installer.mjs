@@ -44,7 +44,6 @@ const MAX_GATEWAY_FILE_BYTES = 2 * 1024 * 1024
 const MAX_GATEWAY_PACKAGE_BYTES = 4 * 1024 * 1024
 const SERVER_FILES = [
   'README.md',
-  GATEWAY_RELEASE_METADATA,
   'src/bridgeServer.ts',
   'src/core/http/boundedSseWriter.ts',
   'src/core/http/routerBasePath.ts',
@@ -476,15 +475,11 @@ async function downloadGatewayPackage(baseUrl, workdir, dryRun) {
     'Gateway package manifest',
   )
   const manifest = gatewayManifest(manifestBytes)
-  let releaseMetadataBytes
-  try {
-    releaseMetadataBytes = readFileSync(join(workdir, GATEWAY_RELEASE_METADATA))
-  } catch {
-    fail('Gateway release metadata is missing from the downloaded Router source')
-  }
-  if (releaseMetadataBytes.length === 0 || releaseMetadataBytes.length > MAX_GATEWAY_RELEASE_METADATA_BYTES) {
-    fail('Gateway release metadata exceeds the download size limit')
-  }
+  const releaseMetadataBytes = await download(
+    sourceFileUrl(baseUrl, GATEWAY_RELEASE_METADATA),
+    MAX_GATEWAY_RELEASE_METADATA_BYTES,
+    'Gateway release metadata',
+  )
   gatewayReleaseMetadata(releaseMetadataBytes, manifestBytes, manifest.version)
   const verified = new Map([
     [GATEWAY_PACKAGE_MANIFEST, manifestBytes],
@@ -509,7 +504,6 @@ async function downloadGatewayPackage(baseUrl, workdir, dryRun) {
     if (existsSync(target)) renameSync(target, displaced)
     renameSync(stage, target)
     rmSync(displaced, { recursive: true, force: true })
-    rmSync(join(workdir, GATEWAY_RELEASE_METADATA), { force: true })
   } catch (error) {
     rmSync(stage, { recursive: true, force: true })
     if (!existsSync(target) && existsSync(displaced)) renameSync(displaced, target)

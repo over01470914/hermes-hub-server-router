@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { readFileSync } from 'node:fs'
-import { access, readFile, rm, unlink, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, rm, unlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -34,23 +34,33 @@ async function reserveLoopbackPort() {
   return address.port
 }
 
-async function readSourceFile(base, pathname) {
+async function readSourceFile(base, pathname, roots = {}) {
   const prefix = `/${base}/`
   if (!pathname.startsWith(prefix)) return null
   const relative = decodeURIComponent(pathname.slice(prefix.length))
   if (!relative || relative.split('/').some(part => part === '.' || part === '..')) return null
-  const root = base === 'router' ? routerRoot : join(gatewayPackageRoot, 'runtime')
+  if (base === 'router' && relative === 'gateway-release-metadata.json') return null
+  const root = base === 'router'
+    ? roots.routerRoot || routerRoot
+    : roots.gatewayRuntimeRoot || join(gatewayPackageRoot, 'runtime')
   try {
-    return await readFile(join(root, relative))
-  } catch {
-    return null
+    const body = await readFile(join(root, relative))
+    if (base === 'gateway') {
+      assert.ok(!body.includes(0x0d), `Gateway runtime fixture ${relative} contains CRLF bytes`)
+    }
+    return body
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw error
   }
 }
 
 async function sourceServer(metadataOverride = '') {
+  const requests = new Set()
   const server = createServer(async (request, response) => {
     const pathname = new URL(request.url || '/', 'http://127.0.0.1').pathname
-    const body = pathname === '/router/gateway-release-metadata.json' && metadataOverride
+    requests.add(pathname)
+    const body = pathname === '/gateway/gateway-release-metadata.json' && metadataOverride
       ? Buffer.from(metadataOverride, 'utf8')
       : await readSourceFile('router', pathname) || await readSourceFile('gateway', pathname)
     if (!body) {
@@ -65,7 +75,7 @@ async function sourceServer(metadataOverride = '') {
   })
   const address = server.address()
   assert.ok(address && typeof address === 'object')
-  return { server, baseUrl: `http://127.0.0.1:${address.port}` }
+  return { server, baseUrl: `http://127.0.0.1:${address.port}`, requests }
 }
 
 function run(command, args, options = {}) {
@@ -168,6 +178,13 @@ const tempRoot = await mkdtemp(join(tmpdir(), 'hermes-hub-router-installer-'))
 const workdir = join(tempRoot, 'runtime')
 const envFile = join(workdir, '.env')
 const routerPort = await reserveLoopbackPort()
+const crlfGatewayRuntimeRoot = join(tempRoot, 'crlf-gateway-runtime')
+await mkdir(crlfGatewayRuntimeRoot, { recursive: true })
+await writeFile(join(crlfGatewayRuntimeRoot, 'adapter.py'), 'fixture\r\n')
+await assert.rejects(
+  () => readSourceFile('gateway', '/gateway/adapter.py', { gatewayRuntimeRoot: crlfGatewayRuntimeRoot }),
+  /Gateway runtime fixture adapter\.py contains CRLF bytes/,
+)
 const source = await sourceServer()
 const baseUrl = `http://127.0.0.1:${routerPort}`
 const deployedGatewayDirectory = join(workdir, 'apps', 'hermes-hub-gateway-plugin')
@@ -213,6 +230,8 @@ try {
   ])
 
   await access(deployedMetadataPath)
+  assert.ok(source.requests.has('/gateway/gateway-release-metadata.json'))
+  assert.ok(!source.requests.has('/router/gateway-release-metadata.json'))
   const installedEnvironment = environmentFrom(envFile)
   assert.equal(installedEnvironment.HERMES_HUB_GATEWAY_RELEASE_METADATA_PATH, deployedMetadataPath)
 
