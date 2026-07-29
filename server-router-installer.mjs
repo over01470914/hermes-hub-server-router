@@ -13,7 +13,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { createHash, randomBytes, randomInt } from 'node:crypto'
 import os from 'node:os'
 
@@ -23,6 +23,8 @@ const DEFAULT_GATEWAY_PACKAGE_BASE_URL = 'https://raw.githubusercontent.com/over
 const DEFAULT_ROUTER_URL = 'https://hermes-hub.s3studio.fun'
 const GATEWAY_PACKAGE_MANIFEST_SCHEMA = 'hermes-hub-gateway-package/v1'
 const GATEWAY_PACKAGE_MANIFEST = 'package-manifest.json'
+const GATEWAY_RELEASE_METADATA_SCHEMA = 'hermes-hub-gateway-release-metadata/v1'
+const GATEWAY_RELEASE_METADATA = 'gateway-release-metadata.json'
 const GATEWAY_PACKAGE_PAYLOAD_FILES = Object.freeze([
   '__init__.py',
   'adapter.py',
@@ -33,13 +35,16 @@ const GATEWAY_PACKAGE_PAYLOAD_FILES = Object.freeze([
 const GATEWAY_PACKAGE_FILES = Object.freeze([
   ...GATEWAY_PACKAGE_PAYLOAD_FILES,
   GATEWAY_PACKAGE_MANIFEST,
+  GATEWAY_RELEASE_METADATA,
 ])
 const MAX_RUNTIME_FILE_BYTES = 2 * 1024 * 1024
 const MAX_GATEWAY_MANIFEST_BYTES = 64 * 1024
+const MAX_GATEWAY_RELEASE_METADATA_BYTES = 16 * 1024
 const MAX_GATEWAY_FILE_BYTES = 2 * 1024 * 1024
 const MAX_GATEWAY_PACKAGE_BYTES = 4 * 1024 * 1024
 const SERVER_FILES = [
   'README.md',
+  GATEWAY_RELEASE_METADATA,
   'src/bridgeServer.ts',
   'src/core/http/boundedSseWriter.ts',
   'src/core/http/routerBasePath.ts',
@@ -79,6 +84,7 @@ const MANAGED_ENV_KEYS = new Set([
   'HERMES_HUB_SESSION_METADATA_STORE_PATH',
   'HERMES_HUB_NATIVE_CONVERSATION_STORE_PATH',
   'HERMES_HUB_PUSH_DEVICE_STORE_PATH',
+  'HERMES_HUB_GATEWAY_RELEASE_METADATA_PATH',
 ])
 
 function parseArgs(argv) {
@@ -192,14 +198,15 @@ function run(command, args = [], options = {}) {
     log(`dry-run ${label}`)
     return ''
   }
-  return execFileSync(command, args, {
+  const output = execFileSync(command, args, {
     cwd: options.cwd,
     env: { ...process.env, ...(options.env || {}) },
     encoding: 'utf8',
     shell: process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(command),
     windowsHide: true,
     stdio: options.capture === false ? 'inherit' : ['ignore', 'pipe', 'pipe'],
-  }).trim()
+  })
+  return output ? String(output).trim() : ''
 }
 
 function sudo(args, options = {}) {
@@ -335,7 +342,11 @@ async function downloadRuntime(baseUrl, workdir, dryRun) {
   for (const file of SERVER_FILES) {
     writeFile(
       join(root, file),
-      await download(sourceFileUrl(baseUrl, file), MAX_RUNTIME_FILE_BYTES, `Router runtime file ${file}`),
+      await download(
+        sourceFileUrl(baseUrl, file),
+        file === GATEWAY_RELEASE_METADATA ? MAX_GATEWAY_RELEASE_METADATA_BYTES : MAX_RUNTIME_FILE_BYTES,
+        `Router runtime file ${file}`,
+      ),
     )
   }
   writeFile(join(workdir, 'package.json'), JSON.stringify({
@@ -418,7 +429,39 @@ function gatewayManifest(bytes) {
   if (GATEWAY_PACKAGE_PAYLOAD_FILES.some(name => !files.has(name))) {
     fail('Gateway package manifest file allowlist is invalid')
   }
-  return { files }
+  return { files, version: value.version }
+}
+
+function gatewayReleaseMetadata(bytes, manifestBytes, manifestVersion) {
+  let value
+  try {
+    value = JSON.parse(bytes.toString('utf8'))
+  } catch {
+    fail('Gateway release metadata contains invalid JSON')
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !exactKeys(value, [
+    'schema',
+    'packageName',
+    'packageVersion',
+    'runtimeManifestSha256',
+  ])) {
+    fail('Gateway release metadata shape is invalid')
+  }
+  if (value.schema !== GATEWAY_RELEASE_METADATA_SCHEMA) fail('Gateway release metadata schema is unsupported')
+  if (typeof value.packageName !== 'string' || !/^@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/.test(value.packageName)) {
+    fail('Gateway release metadata package name is invalid')
+  }
+  if (typeof value.packageVersion !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value.packageVersion)) {
+    fail('Gateway release metadata package version is invalid')
+  }
+  if (value.packageVersion !== manifestVersion) fail('Gateway release metadata version does not match the package manifest')
+  if (typeof value.runtimeManifestSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.runtimeManifestSha256)) {
+    fail('Gateway release metadata manifest SHA-256 is invalid')
+  }
+  const manifestSha256 = createHash('sha256').update(manifestBytes).digest('hex')
+  if (value.runtimeManifestSha256 !== manifestSha256) {
+    fail('Gateway release metadata does not match the downloaded package manifest')
+  }
 }
 
 async function downloadGatewayPackage(baseUrl, workdir, dryRun) {
@@ -433,7 +476,20 @@ async function downloadGatewayPackage(baseUrl, workdir, dryRun) {
     'Gateway package manifest',
   )
   const manifest = gatewayManifest(manifestBytes)
-  const verified = new Map([[GATEWAY_PACKAGE_MANIFEST, manifestBytes]])
+  let releaseMetadataBytes
+  try {
+    releaseMetadataBytes = readFileSync(join(workdir, GATEWAY_RELEASE_METADATA))
+  } catch {
+    fail('Gateway release metadata is missing from the downloaded Router source')
+  }
+  if (releaseMetadataBytes.length === 0 || releaseMetadataBytes.length > MAX_GATEWAY_RELEASE_METADATA_BYTES) {
+    fail('Gateway release metadata exceeds the download size limit')
+  }
+  gatewayReleaseMetadata(releaseMetadataBytes, manifestBytes, manifest.version)
+  const verified = new Map([
+    [GATEWAY_PACKAGE_MANIFEST, manifestBytes],
+    [GATEWAY_RELEASE_METADATA, releaseMetadataBytes],
+  ])
   for (const name of GATEWAY_PACKAGE_PAYLOAD_FILES) {
     const expected = manifest.files.get(name)
     const bytes = await download(sourceFileUrl(baseUrl, name), expected.bytes, `Gateway package file ${name}`)
@@ -453,6 +509,7 @@ async function downloadGatewayPackage(baseUrl, workdir, dryRun) {
     if (existsSync(target)) renameSync(target, displaced)
     renameSync(stage, target)
     rmSync(displaced, { recursive: true, force: true })
+    rmSync(join(workdir, GATEWAY_RELEASE_METADATA), { force: true })
   } catch (error) {
     rmSync(stage, { recursive: true, force: true })
     if (!existsSync(target) && existsSync(displaced)) renameSync(displaced, target)
@@ -529,6 +586,7 @@ function updateEnvFile(path, config, dryRun) {
     `HERMES_HUB_SESSION_METADATA_STORE_PATH=${join(config.workdir, 'state', 'session-metadata.json')}`,
     `HERMES_HUB_NATIVE_CONVERSATION_STORE_PATH=${join(config.workdir, 'state', 'native-conversations.json')}`,
     `HERMES_HUB_PUSH_DEVICE_STORE_PATH=${join(config.workdir, 'state', 'push-devices.json')}`,
+    `HERMES_HUB_GATEWAY_RELEASE_METADATA_PATH=${config.gatewayReleaseMetadataPath}`,
   )
   const content = [...preserved, ...additions, ''].join('\n')
   if (dryRun) return log(`dry-run update env ${path}; secret values are not printed`)
@@ -722,6 +780,7 @@ Options:
   --status               Show service and health status
   --uninstall            Remove autostart; leave runtime/env files
   --no-start             Install/update without starting service
+  --no-autostart         Install/update without registering an autostart service
   --rotate-agent-approval-token
                          Generate a new Router-to-installer approval token
 `)
@@ -731,7 +790,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (boolArg(args, 'help') || args._[0] === 'help') return help()
   const platform = platformArg(args)
-  const workdir = textArg(args, 'workdir', defaultWorkdir(platform))
+  const workdir = resolve(textArg(args, 'workdir', defaultWorkdir(platform)))
   const user = textArg(args, 'user', process.env.SUDO_USER || os.userInfo().username)
   const baseUrl = normalizeSourceBase(textArg(args, 'base-url', DEFAULT_BASE_URL), 'Router source URL')
   const gatewayPackageBaseUrl = normalizeSourceBase(
@@ -749,12 +808,19 @@ async function main() {
     routerUrl: textArg(args, 'router-url', DEFAULT_ROUTER_URL).replace(/\/$/, ''),
     workdir,
     service: textArg(args, 'service', 'hermes-hub-router'),
-    envFile: textArg(args, 'router-env', textArg(args, 'env-file', defaultEnvFile(platform, workdir))),
+    envFile: resolve(textArg(args, 'router-env', textArg(args, 'env-file', defaultEnvFile(platform, workdir)))),
+    gatewayReleaseMetadataPath: join(
+      workdir,
+      'apps',
+      'hermes-hub-gateway-plugin',
+      GATEWAY_RELEASE_METADATA,
+    ),
     host: textArg(args, 'host', '127.0.0.1'),
     port: Number(textArg(args, 'port', '14320')),
     user,
     group: textArg(args, 'group', user),
     noStart: boolArg(args, 'no-start'),
+    noAutostart: boolArg(args, 'no-autostart'),
     rotateAgentApprovalToken: boolArg(args, 'rotate-agent-approval-token'),
   }
   const dryRun = boolArg(args, 'dry-run')
@@ -780,7 +846,8 @@ async function main() {
   installDependencies(config.workdir, dryRun)
   updateEnvFile(config.envFile, config, dryRun)
   const runner = writeWatchdog(config, dryRun) || join(config.workdir, 'scripts', 'run-server-router-watchdog.mjs')
-  installAutostart(config, runner, dryRun)
+  if (config.noAutostart) log('autostart registration skipped')
+  else installAutostart(config, runner, dryRun)
   if (!dryRun && !config.noStart) await status(config)
   log('done')
 }

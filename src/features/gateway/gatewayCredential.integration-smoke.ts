@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createServer } from 'node:net'
-import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { once } from 'node:events'
@@ -10,8 +10,6 @@ import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
 
 import {
-  gatewayPluginReleaseArtifact,
-  gatewayPluginNpmPackage,
   gatewayPluginRepositoryUrl,
 } from './gatewayPluginSource.js'
 
@@ -198,6 +196,22 @@ const routerPackageRoot = join(dirname(fileURLToPath(import.meta.url)), '../../.
 const repositoryRoot = join(routerPackageRoot, '../..')
 const port = await reserveLoopbackPort()
 const workdir = await mkdtemp(join(tmpdir(), 'hermes-hub-gateway-rotation-'))
+const gatewayPackageDirectory = join(workdir, 'gateway-package')
+const gatewayManifestPath = join(gatewayPackageDirectory, 'package-manifest.json')
+const gatewayReleaseMetadataPath = join(gatewayPackageDirectory, 'gateway-release-metadata.json')
+const gatewayManifest = await readFile(
+  join(repositoryRoot, 'apps', 'hermes-hub-gateway-npm', 'runtime', 'package-manifest.json'),
+)
+const gatewayRelease = JSON.parse(await readFile(
+  join(repositoryRoot, 'apps', 'hermes-hub-gateway-npm', 'src', 'pairing-core', 'references', 'release.json'),
+  'utf8',
+))
+await mkdir(gatewayPackageDirectory, { recursive: true })
+await writeFile(gatewayManifestPath, gatewayManifest)
+await writeFile(gatewayReleaseMetadataPath, `${JSON.stringify({
+  schema: 'hermes-hub-gateway-release-metadata/v1',
+  ...gatewayRelease,
+}, null, 2)}\n`)
 const pairingStorePath = join(workdir, 'pairing-store.json')
 const baseUrl = `http://127.0.0.1:${port}`
 const agentApprovalToken = 'rotation-smoke-agent-approval-' + 'a'.repeat(48)
@@ -218,6 +232,7 @@ const env: NodeJS.ProcessEnv = {
   HERMES_HUB_PAIRING_STORE_PATH: pairingStorePath,
   HERMES_HUB_SESSION_METADATA_STORE_PATH: join(workdir, 'session-metadata.json'),
   HERMES_HUB_DIAGNOSTICS_DIR: join(workdir, 'diagnostics'),
+  HERMES_HUB_GATEWAY_RELEASE_METADATA_PATH: gatewayReleaseMetadataPath,
   HERMES_HUB_LOG_LEVEL: 'warn',
 }
 const approvalHeaders = {
@@ -248,10 +263,12 @@ try {
   }>(`${baseUrl}/router/health`)
   assert.deepEqual(health.gatewayPlugin, {
     skillsRepositoryUrl: gatewayPluginRepositoryUrl,
-    npmPackage: gatewayPluginNpmPackage,
-    release: {
-      ...gatewayPluginReleaseArtifact,
+    npmPackage: {
+      name: gatewayRelease.packageName,
+      version: gatewayRelease.packageVersion,
+      runtimeManifestSha256: gatewayRelease.runtimeManifestSha256,
     },
+    release: gatewayRelease,
   })
   assert.equal(
     (await fetch(`${baseUrl}/apps/hermes-hub-gateway-plugin/install.mjs`)).status,

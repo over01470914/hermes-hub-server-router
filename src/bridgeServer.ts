@@ -22,9 +22,8 @@ import {
 import { requireGatewayBoundBridge } from './core/security/bridgePolicy.js'
 import { DiagnosticsPayloadError, normalizeDiagnosticsReceipt, summarizeDiagnosticsReceipt } from './features/diagnostics/diagnosticsReceipt.js'
 import {
-  gatewayPluginReleaseArtifact,
-  gatewayPluginNpmPackage,
   gatewayPluginRepositoryUrl,
+  readGatewayPluginReleaseArtifact,
 } from './features/gateway/gatewayPluginSource.js'
 import {
   AGENT_FEATURE_GATEWAY_CONTRACT_VERSION,
@@ -1967,6 +1966,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
   if (pathname === '/router/health') {
     const gateways = gatewayRegistry.list()
     const onlineAgents = new Set(gateways.filter(item => item.routable).map(item => item.hermesAgentId))
+    const gatewayRelease = readGatewayPluginReleaseArtifact()
     logRouter('debug', 'Router health requested', {
       gatewayCount: gateways.length,
       gatewayOnlineCount: gateways.filter(item => item.online).length,
@@ -1986,10 +1986,14 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
       pairing: 'prompt-code-claim/v2',
       gatewayPlugin: {
         skillsRepositoryUrl: gatewayPluginRepositoryUrl,
-        npmPackage: gatewayPluginNpmPackage,
-        release: {
-          ...gatewayPluginReleaseArtifact,
-        },
+        ...(gatewayRelease ? {
+          npmPackage: {
+            name: gatewayRelease.packageName,
+            version: gatewayRelease.packageVersion,
+            runtimeManifestSha256: gatewayRelease.runtimeManifestSha256,
+          },
+          release: gatewayRelease,
+        } : {}),
       },
       debugGateway: { enabled: Boolean(debugGateway) },
       debugPairingCode: { enabled: Boolean(debugPairingCode) },
