@@ -4,6 +4,17 @@ import type { RawData, WebSocket } from 'ws'
 import { elapsedMs, type GatewayRequestMetrics } from '../../core/protocol/bridgeProtocol.js'
 import { logRouter } from '../../core/observability/routerLogger.js'
 import type { GatewayCredentialState } from '../pairing/pairingStore.js'
+import {
+  GatewayLivenessSupervisor,
+  type GatewayLivenessProbe,
+  type GatewayLivenessProbeOutcome,
+  type GatewayLivenessState,
+} from './gatewayLivenessSupervisor.js'
+import {
+  GatewayRequestTombstones,
+  type GatewayRequestLifecycleMetrics,
+  type GatewayRpcCancelOutcome,
+} from './gatewayRequestTombstones.js'
 
 export interface GatewayState {
   gatewayId: string
@@ -20,6 +31,7 @@ export interface GatewayState {
   mode: string
   protocols?: string[]
   capabilities?: string[]
+  operational?: GatewayCombinedOperationalMetrics
 }
 
 export type ConnectionKind = 'hermes-hub-gateway'
@@ -29,6 +41,7 @@ export interface GatewayRegistryOptions {
   protocol: string
   protocols: string[]
   helloTimeoutMs: number
+  livenessProbeIntervalMs?: number
 }
 
 const defaultRegistryOptions: GatewayRegistryOptions = {
@@ -36,6 +49,7 @@ const defaultRegistryOptions: GatewayRegistryOptions = {
   protocol: 'hermes-hub-gateway-rpc/v2',
   protocols: ['hermes-hub-gateway-rpc/v2'],
   helloTimeoutMs: 10_000,
+  livenessProbeIntervalMs: 5_000,
 }
 
 export interface GatewaySessionSubmit {
@@ -97,6 +111,8 @@ export interface GatewayHeartbeatResult {
   latencyMs?: number
   online: boolean
   lastSeenAt?: number
+  liveness?: GatewayLivenessState['kind']
+  consecutiveMisses?: 1
   error?: string
 }
 
@@ -111,6 +127,61 @@ export interface GatewayRuntimeSnapshot {
   snapshot: Record<string, unknown>
   receivedAt: number
   stale: boolean
+}
+
+export interface GatewayOperationalSnapshot {
+  sampledAt: number
+  eventLoop: {
+    sampleCount: number
+    lastMs: number
+    p50Ms: number
+    p95Ms: number
+    p99Ms: number
+    signal: 'ok' | 'warning' | 'critical'
+  }
+  fileDescriptors: {
+    count?: number
+    softLimit?: number
+    ratioPercent?: number
+    consecutiveHighSamples: number
+    signal: 'ok' | 'warning' | 'critical' | 'unavailable'
+  }
+  tasks: Record<
+    'request' | 'native' | 'transcript' | 'cancel',
+    { count: number; oldestAgeMs: number }
+  >
+  semaphore: {
+    waitingCount: number
+    oldestWaitingMs: number
+    lastWaitMs: number
+    p95WaitMs: number
+  }
+  outbound: Record<
+    'control' | 'data',
+    { depth: number; oldestAgeMs: number }
+  >
+  rpcCancel: {
+    cancelled: number
+    notFound: number
+    alreadyCompleted: number
+  }
+  reconnect: {
+    lastAt?: number
+    reason?: string
+  }
+}
+
+export interface GatewayCombinedOperationalMetrics {
+  gateway?: GatewayOperationalSnapshot
+  gatewayReceivedAt?: number
+  router: {
+    heartbeat: {
+      state: GatewayLivenessState['kind']
+      rttMs?: number
+      missStreak: number
+    }
+    rpc: GatewayRequestLifecycleMetrics
+  }
 }
 
 export interface GatewayActivationReservation {
@@ -135,8 +206,7 @@ interface PendingRpc {
 }
 
 interface PendingHeartbeat {
-  resolve: (result: GatewayHeartbeatResult) => void
-  reject: (error: Error) => void
+  resolve: (result: GatewayLivenessProbeOutcome) => void
   timeout: NodeJS.Timeout
   startedAt: number
 }
@@ -169,6 +239,8 @@ interface TrackedGateway extends GatewayState {
   pendingHeartbeats: Map<string, PendingHeartbeat>
   pendingNative: Map<string, PendingNative>
   pendingRuntimeSnapshots: Map<string, PendingRuntimeSnapshot>
+  operationalSnapshot?: GatewayOperationalSnapshot
+  operationalReceivedAt?: number
   helloTimeout?: NodeJS.Timeout
 }
 
@@ -209,6 +281,129 @@ function safeRuntimeString(value: unknown, maximum = 240): string | undefined {
 function safeRuntimeNumber(value: unknown): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > Number.MAX_SAFE_INTEGER) return undefined
   return Math.floor(value)
+}
+
+function safeOperationalNumber(
+  value: unknown,
+  maximum = 1_000_000_000,
+): number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    value < 0 ||
+    value > maximum
+  ) return 0
+  return Math.round(value * 1_000) / 1_000
+}
+
+function cleanOperationalSignal(
+  value: unknown,
+  allowUnavailable = false,
+): 'ok' | 'warning' | 'critical' | 'unavailable' {
+  if (value === 'warning' || value === 'critical') return value
+  if (allowUnavailable && value === 'unavailable') return value
+  return 'ok'
+}
+
+function cleanGatewayOperationalSnapshot(
+  value: Record<string, unknown>,
+  state: Pick<TrackedGateway, 'gatewayId' | 'hermesAgentId'>,
+): GatewayOperationalSnapshot {
+  if (
+    value.gatewayId !== state.gatewayId ||
+    value.hermesAgentId !== state.hermesAgentId
+  ) {
+    throw new Error('Gateway operational snapshot identity mismatch')
+  }
+  const raw = asRecord(value.snapshot)
+  if (
+    !raw ||
+    raw.object !== 'hermes-hub.gateway.operational' ||
+    raw.version !== 1
+  ) {
+    throw new Error('Gateway operational snapshot contract is invalid')
+  }
+  const eventLoop = asRecord(raw.eventLoop) || {}
+  const fileDescriptors = asRecord(raw.fileDescriptors) || {}
+  const tasks = asRecord(raw.tasks) || {}
+  const semaphore = asRecord(raw.semaphore) || {}
+  const outbound = asRecord(raw.outbound) || {}
+  const rpcCancel = asRecord(raw.rpcCancel) || {}
+  const reconnect = asRecord(raw.reconnect) || {}
+  const cleanTasks = {} as GatewayOperationalSnapshot['tasks']
+  for (const name of ['request', 'native', 'transcript', 'cancel'] as const) {
+    const task = asRecord(tasks[name]) || {}
+    cleanTasks[name] = {
+      count: safeOperationalNumber(task.count, 100_000),
+      oldestAgeMs: safeOperationalNumber(task.oldestAgeMs),
+    }
+  }
+  const cleanOutbound = {} as GatewayOperationalSnapshot['outbound']
+  for (const name of ['control', 'data'] as const) {
+    const queue = asRecord(outbound[name]) || {}
+    cleanOutbound[name] = {
+      depth: safeOperationalNumber(queue.depth, 100_000),
+      oldestAgeMs: safeOperationalNumber(queue.oldestAgeMs),
+    }
+  }
+  const reconnectReason = safeRuntimeString(reconnect.reason, 80)
+  if (reconnectReason && !/^[a-z0-9_.-]+$/.test(reconnectReason)) {
+    throw new Error('Gateway operational reconnect reason is invalid')
+  }
+  const fdCount = typeof fileDescriptors.count === 'number'
+    ? safeOperationalNumber(fileDescriptors.count, 10_000_000)
+    : undefined
+  const fdSoftLimit = typeof fileDescriptors.softLimit === 'number'
+    ? safeOperationalNumber(fileDescriptors.softLimit, 10_000_000)
+    : undefined
+  const fdRatio = typeof fileDescriptors.ratioPercent === 'number'
+    ? safeOperationalNumber(fileDescriptors.ratioPercent, 100)
+    : undefined
+  const reconnectAt = typeof reconnect.lastAt === 'number'
+    ? safeOperationalNumber(reconnect.lastAt, Number.MAX_SAFE_INTEGER)
+    : undefined
+  return {
+    sampledAt: safeOperationalNumber(
+      raw.sampledAt,
+      Number.MAX_SAFE_INTEGER,
+    ),
+    eventLoop: {
+      sampleCount: safeOperationalNumber(eventLoop.sampleCount, 60),
+      lastMs: safeOperationalNumber(eventLoop.lastMs, 60_000),
+      p50Ms: safeOperationalNumber(eventLoop.p50Ms, 60_000),
+      p95Ms: safeOperationalNumber(eventLoop.p95Ms, 60_000),
+      p99Ms: safeOperationalNumber(eventLoop.p99Ms, 60_000),
+      signal: cleanOperationalSignal(eventLoop.signal) as
+        'ok' | 'warning' | 'critical',
+    },
+    fileDescriptors: {
+      ...(fdCount === undefined ? {} : { count: fdCount }),
+      ...(fdSoftLimit === undefined ? {} : { softLimit: fdSoftLimit }),
+      ...(fdRatio === undefined ? {} : { ratioPercent: fdRatio }),
+      consecutiveHighSamples: safeOperationalNumber(
+        fileDescriptors.consecutiveHighSamples,
+        1_000_000,
+      ),
+      signal: cleanOperationalSignal(fileDescriptors.signal, true),
+    },
+    tasks: cleanTasks,
+    semaphore: {
+      waitingCount: safeOperationalNumber(semaphore.waitingCount, 100_000),
+      oldestWaitingMs: safeOperationalNumber(semaphore.oldestWaitingMs),
+      lastWaitMs: safeOperationalNumber(semaphore.lastWaitMs),
+      p95WaitMs: safeOperationalNumber(semaphore.p95WaitMs),
+    },
+    outbound: cleanOutbound,
+    rpcCancel: {
+      cancelled: safeOperationalNumber(rpcCancel.cancelled),
+      notFound: safeOperationalNumber(rpcCancel.notFound),
+      alreadyCompleted: safeOperationalNumber(rpcCancel.alreadyCompleted),
+    },
+    reconnect: {
+      ...(reconnectAt === undefined ? {} : { lastAt: reconnectAt }),
+      ...(reconnectReason ? { reason: reconnectReason } : {}),
+    },
+  }
 }
 
 function cleanRuntimeCategories(value: unknown): Record<string, unknown>[] {
@@ -443,8 +638,23 @@ export class GatewayRegistry {
   private sessionEventHandler?: (event: GatewaySessionEvent) => boolean
   private runtimeSnapshotHandler?: (snapshot: GatewayRuntimeSnapshot) => void
   private readonly runtimeSnapshots = new Map<string, GatewayRuntimeSnapshot>()
+  private readonly requestTombstones = new GatewayRequestTombstones()
+  private readonly liveness: GatewayLivenessSupervisor
+  private readonly livenessTimer: NodeJS.Timeout
 
-  constructor(private readonly options: GatewayRegistryOptions = defaultRegistryOptions) {}
+  constructor(private readonly options: GatewayRegistryOptions = defaultRegistryOptions) {
+    this.liveness = new GatewayLivenessSupervisor(
+      (hermesAgentId, timeoutMs) => this.livenessProbeFor(
+        hermesAgentId,
+        timeoutMs,
+      ),
+    )
+    this.livenessTimer = setInterval(
+      () => this.probeOnlineGateways(),
+      options.livenessProbeIntervalMs ?? 5_000,
+    )
+    this.livenessTimer.unref()
+  }
 
   attach(socket: WebSocket, record: { gatewayId?: string; hermesAgentId?: string; gatewayCredentialState?: GatewayCredentialState; requestId: string; user: string; deviceName: string }): GatewayState {
     if (!record.gatewayId) throw new Error('Gateway id missing')
@@ -504,6 +714,11 @@ export class GatewayRegistry {
       state.routable = false
       state.lastSeenAt = nowSeconds()
       state.socket = undefined
+      this.liveness.recordSocketClosed(
+        state.hermesAgentId,
+        state.gatewayConnectionId,
+        reason,
+      )
       logRouter('warn', 'Gateway disconnected', {
         gatewayId: state.gatewayId,
         hermesAgentId: state.hermesAgentId,
@@ -522,7 +737,7 @@ export class GatewayRegistry {
       }
       for (const [id, pending] of state.pendingHeartbeats.entries()) {
         clearTimeout(pending.timeout)
-        pending.reject(new Error(reason))
+        pending.resolve({ ok: false, reason })
         state.pendingHeartbeats.delete(id)
       }
       for (const [id, pending] of state.pendingNative.entries()) {
@@ -769,6 +984,10 @@ export class GatewayRegistry {
         }
       }
 
+      this.liveness.recordSocketReady(
+        candidate.hermesAgentId,
+        candidate.gatewayConnectionId,
+      )
       const gateway = this.publicState(candidate)
       logRouter('info', 'Gateway credential promoted to active route', {
         gatewayId: candidate.gatewayId,
@@ -817,54 +1036,59 @@ export class GatewayRegistry {
     }
   }
 
-  async heartbeatByAgentId(hermesAgentId?: string, timeoutMs = 3000): Promise<GatewayHeartbeatResult> {
+  heartbeatSnapshotByAgentId(hermesAgentId?: string): GatewayHeartbeatResult {
     const state = hermesAgentId
       ? this.gatewayForAgent(hermesAgentId)
       : [...this.gateways.values()].find(item => item.gatewayCredentialState === 'active' && item.online && item.socket?.readyState === 1)
-    if (!state?.socket || !state.online || state.socket.readyState !== 1) {
-      logRouter('warn', 'Gateway heartbeat skipped because gateway is offline', {
-        hermesAgentId: hermesAgentId || state?.hermesAgentId,
-        lastSeenAt: state?.lastSeenAt
-      })
-      return {
-        ok: false,
-        gatewayId: state?.gatewayId,
-        hermesAgentId: hermesAgentId || state?.hermesAgentId,
-        gatewayConnectionId: state?.gatewayConnectionId,
-        online: false,
-        lastSeenAt: state?.lastSeenAt,
-        error: 'Gateway offline'
-      }
+    const resolvedAgentId = hermesAgentId || state?.hermesAgentId
+    const liveness = resolvedAgentId
+      ? this.liveness.snapshot(resolvedAgentId)
+      : { kind: 'offline', reason: 'Gateway offline' } as const
+    const socketOpen = Boolean(
+      state?.socket &&
+      state.online &&
+      state.socket.readyState === 1,
+    )
+    const online = socketOpen && liveness.kind !== 'offline'
+    const error = liveness.kind === 'suspect'
+      ? 'Gateway heartbeat suspect'
+      : liveness.kind === 'offline'
+        ? liveness.reason
+        : online
+          ? undefined
+          : 'Gateway offline'
+    return {
+      ok: online && liveness.kind === 'healthy',
+      gatewayId: state?.gatewayId,
+      hermesAgentId: resolvedAgentId,
+      gatewayConnectionId: state?.gatewayConnectionId,
+      online,
+      lastSeenAt: state?.lastSeenAt,
+      liveness: liveness.kind,
+      ...(liveness.kind === 'healthy'
+        ? { latencyMs: liveness.latencyMs }
+        : {}),
+      ...(liveness.kind === 'suspect'
+        ? { consecutiveMisses: liveness.consecutiveMisses }
+        : {}),
+      ...(error ? { error } : {}),
     }
-    const id = `hb_${randomUUID()}`
-    const startedAt = Date.now()
-    return new Promise<GatewayHeartbeatResult>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        state.pendingHeartbeats.delete(id)
-        state.online = false
-        state.routable = false
-        state.lastSeenAt = nowSeconds()
-        state.socket?.terminate()
-        state.socket = undefined
-        logRouter('warn', 'Gateway heartbeat timed out', {
-          hermesAgentId: state.hermesAgentId,
-          requestId: id,
-          timeoutMs
-        })
-        resolve({ ok: false, gatewayId: state.gatewayId, hermesAgentId: state.hermesAgentId, gatewayConnectionId: state.gatewayConnectionId, online: false, lastSeenAt: state.lastSeenAt, error: 'Gateway heartbeat timeout' })
-      }, timeoutMs)
-      state.pendingHeartbeats.set(id, { resolve, reject, timeout, startedAt })
-      state.socket?.send(JSON.stringify({ type: 'heartbeat', id, sentAt: startedAt }), error => {
-        if (!error) return
-        clearTimeout(timeout)
-        state.pendingHeartbeats.delete(id)
-        logRouter('warn', 'Gateway heartbeat send failed', {
-          hermesAgentId: state.hermesAgentId,
-          requestId: id
-        }, error)
-        reject(error)
-      })
-    })
+  }
+
+  async heartbeatByAgentId(
+    hermesAgentId?: string,
+    timeoutMs = 3_000,
+  ): Promise<GatewayHeartbeatResult> {
+    const resolvedAgentId = hermesAgentId ||
+      [...this.gateways.values()].find(
+        item =>
+          item.gatewayCredentialState === 'active' &&
+          item.online &&
+          item.socket?.readyState === 1,
+      )?.hermesAgentId
+    if (!resolvedAgentId) return this.heartbeatSnapshotByAgentId()
+    await this.liveness.probe(resolvedAgentId, timeoutMs)
+    return this.heartbeatSnapshotByAgentId(resolvedAgentId)
   }
 
   async requestByAgentId(hermesAgentId: string, payload: GatewayRpcRequest, timeoutMs = 10_000): Promise<GatewayRpcResponse> {
@@ -886,6 +1110,15 @@ export class GatewayRegistry {
       const timeout = setTimeout(() => {
         state.pending.delete(id)
         state.inFlightRpc = state.pending.size + state.pendingNative.size
+        const cancelDispatched = state.capabilities?.includes('rpc.cancel') === true
+        this.requestTombstones.recordTimeout({
+          hermesAgentId,
+          gatewayId: state.gatewayId,
+          gatewayConnectionId: state.gatewayConnectionId,
+          requestId: id,
+          startedAt,
+          cancelDispatched,
+        })
         logRouter('warn', 'Gateway RPC timed out', {
           hermesAgentId,
           requestId: id,
@@ -895,6 +1128,29 @@ export class GatewayRegistry {
           timeoutMs,
           latencyMs: elapsedMs(startedAt)
         })
+        if (cancelDispatched) {
+          const cancelMessage = JSON.stringify({ type: 'rpc_cancel', id })
+          if (!state.socket || state.socket.readyState !== 1) {
+            this.requestTombstones.recordCancelDispatchFailure({
+              hermesAgentId,
+              gatewayConnectionId: state.gatewayConnectionId,
+              requestId: id,
+            })
+          } else {
+            state.socket.send(cancelMessage, error => {
+              if (!error) return
+              this.requestTombstones.recordCancelDispatchFailure({
+                hermesAgentId,
+                gatewayConnectionId: state.gatewayConnectionId,
+                requestId: id,
+              })
+              logRouter('warn', 'Gateway RPC cancel dispatch failed', {
+                hermesAgentId,
+                requestId: id,
+              }, error)
+            })
+          }
+        }
         reject(new Error('Gateway RPC timeout'))
       }, timeoutMs)
       state.pending.set(id, { resolve, reject, timeout, startedAt })
@@ -914,6 +1170,19 @@ export class GatewayRegistry {
         reject(error)
       })
     })
+  }
+
+  requestLifecycleMetricsByAgentId(
+    hermesAgentId: string,
+  ): GatewayRequestLifecycleMetrics {
+    return this.requestTombstones.snapshot(hermesAgentId)
+  }
+
+  operationalMetricsByAgentId(
+    hermesAgentId: string,
+  ): GatewayCombinedOperationalMetrics {
+    const state = this.gatewayForAgent(hermesAgentId)
+    return this.operationalMetricsForState(hermesAgentId, state)
   }
 
   async submitSessionByAgentId(
@@ -1162,13 +1431,84 @@ export class GatewayRegistry {
       }
       return
     }
+    if (parsed.type === 'operational_snapshot') {
+      try {
+        state.operationalSnapshot = cleanGatewayOperationalSnapshot(
+          parsed,
+          state,
+        )
+        state.operationalReceivedAt = Date.now()
+        logRouter('debug', 'Gateway operational snapshot accepted', {
+          hermesAgentId: state.hermesAgentId,
+          gatewayId: state.gatewayId,
+          eventLoopSignal: state.operationalSnapshot.eventLoop.signal,
+          fileDescriptorSignal:
+            state.operationalSnapshot.fileDescriptors.signal,
+        })
+      } catch (error) {
+        logRouter('warn', 'Gateway operational snapshot rejected', {
+          hermesAgentId: state.hermesAgentId,
+          gatewayId: state.gatewayId,
+        }, error)
+        state.socket?.close(4400, 'invalid operational snapshot')
+      }
+      return
+    }
+    if (parsed.type === 'rpc_cancel_ack' && typeof parsed.id === 'string') {
+      const outcome = (
+        parsed.outcome === 'cancelled' ||
+        parsed.outcome === 'not_found' ||
+        parsed.outcome === 'already_completed'
+      )
+        ? parsed.outcome as GatewayRpcCancelOutcome
+        : undefined
+      if (!outcome) {
+        logRouter('warn', 'Gateway RPC cancel acknowledgement rejected', {
+          hermesAgentId: state.hermesAgentId,
+          requestId: parsed.id,
+        })
+        state.socket?.close(4400, 'invalid rpc cancel acknowledgement')
+        return
+      }
+      const classification = this.requestTombstones.recordCancelAck({
+        hermesAgentId: state.hermesAgentId,
+        gatewayConnectionId: state.gatewayConnectionId,
+        requestId: parsed.id,
+        outcome,
+      })
+      logRouter(
+        classification === 'recorded' ? 'info' : 'warn',
+        classification === 'recorded'
+          ? 'Gateway RPC cancel acknowledgement received'
+          : 'Gateway RPC cancel acknowledgement ignored',
+        {
+          hermesAgentId: state.hermesAgentId,
+          requestId: parsed.id,
+          outcome,
+          classification,
+        },
+      )
+      return
+    }
     if (parsed.type === 'rpc_response' && typeof parsed.id === 'string') {
       const pending = state.pending.get(parsed.id)
       if (!pending) {
-        logRouter('warn', 'Gateway RPC response ignored because request is unknown', {
+        const classification = this.requestTombstones.classifyResponse({
           hermesAgentId: state.hermesAgentId,
-          requestId: parsed.id
+          gatewayConnectionId: state.gatewayConnectionId,
+          requestId: parsed.id,
         })
+        logRouter(
+          classification === 'late_after_timeout' ? 'info' : 'warn',
+          classification === 'late_after_timeout'
+            ? 'Gateway RPC response ignored after Router timeout'
+            : 'Gateway RPC response ignored because request is unknown',
+          {
+            hermesAgentId: state.hermesAgentId,
+            requestId: parsed.id,
+            classification,
+          },
+        )
         return
       }
       state.pending.delete(parsed.id)
@@ -1218,12 +1558,8 @@ export class GatewayRegistry {
         })
         pending.resolve({
           ok: false,
-          gatewayId: state.gatewayId,
-          hermesAgentId: state.hermesAgentId,
-          gatewayConnectionId: state.gatewayConnectionId,
-          online: false,
-          lastSeenAt: state.lastSeenAt,
-          error: 'Gateway heartbeat identity mismatch',
+          reason: 'Gateway heartbeat identity mismatch',
+          fatal: true,
         })
         state.socket?.close(4403, 'gateway heartbeat identity mismatch')
         return
@@ -1237,11 +1573,6 @@ export class GatewayRegistry {
       })
       pending.resolve({
         ok: true,
-        gatewayId: state.gatewayId,
-        hermesAgentId: state.hermesAgentId,
-        gatewayConnectionId: state.gatewayConnectionId,
-        online: true,
-        lastSeenAt: state.lastSeenAt,
         latencyMs: Date.now() - pending.startedAt,
       })
       return
@@ -1301,6 +1632,12 @@ export class GatewayRegistry {
       state.helloTimeout = undefined
       state.online = true
       state.routable = state.gatewayCredentialState === 'active'
+      if (state.gatewayCredentialState === 'active') {
+        this.liveness.recordSocketReady(
+          state.hermesAgentId,
+          state.gatewayConnectionId,
+        )
+      }
       logRouter('info', 'Gateway hello received', {
         gatewayId: state.gatewayId,
         hermesAgentId: state.hermesAgentId,
@@ -1340,6 +1677,110 @@ export class GatewayRegistry {
     }))
   }
 
+  private livenessProbeFor(
+    hermesAgentId: string,
+    timeoutMs: number,
+  ): GatewayLivenessProbe | null {
+    const state = this.gatewayForAgent(hermesAgentId)
+    if (!state?.socket || !state.online || state.socket.readyState !== 1) {
+      return null
+    }
+    const gatewayConnectionId = state.gatewayConnectionId
+    return {
+      gatewayConnectionId,
+      run: () => this.sendHeartbeatProbe(state, timeoutMs),
+      close: reason => {
+        const current = this.gatewayForAgent(hermesAgentId)
+        if (!current ||
+            current.gatewayConnectionId !== gatewayConnectionId) {
+          return
+        }
+        current.online = false
+        current.routable = false
+        current.lastSeenAt = nowSeconds()
+        logRouter('warn', 'Gateway marked offline after liveness misses', {
+          gatewayId: current.gatewayId,
+          hermesAgentId,
+          gatewayConnectionId,
+          reason,
+        })
+        if (current.socket && current.socket.readyState <= 1) {
+          current.socket.terminate()
+        }
+      },
+    }
+  }
+
+  private sendHeartbeatProbe(
+    state: TrackedGateway,
+    timeoutMs: number,
+  ): Promise<GatewayLivenessProbeOutcome> {
+    const current = this.gatewayForAgent(state.hermesAgentId)
+    if (!state.socket ||
+        state.socket.readyState !== 1 ||
+        current?.gatewayConnectionId !== state.gatewayConnectionId) {
+      return Promise.resolve({
+        ok: false,
+        reason: 'Gateway offline',
+      })
+    }
+    const id = `hb_${randomUUID()}`
+    const startedAt = Date.now()
+    return new Promise<GatewayLivenessProbeOutcome>(resolve => {
+      const timeout = setTimeout(() => {
+        state.pendingHeartbeats.delete(id)
+        logRouter('warn', 'Gateway heartbeat probe timed out', {
+          gatewayId: state.gatewayId,
+          hermesAgentId: state.hermesAgentId,
+          gatewayConnectionId: state.gatewayConnectionId,
+          requestId: id,
+          timeoutMs,
+        })
+        resolve({
+          ok: false,
+          reason: 'Gateway heartbeat timeout',
+        })
+      }, timeoutMs)
+      state.pendingHeartbeats.set(id, { resolve, timeout, startedAt })
+      state.socket?.send(
+        JSON.stringify({ type: 'heartbeat', id, sentAt: startedAt }),
+        error => {
+          if (!error || !state.pendingHeartbeats.has(id)) return
+          clearTimeout(timeout)
+          state.pendingHeartbeats.delete(id)
+          logRouter('warn', 'Gateway heartbeat send failed', {
+            gatewayId: state.gatewayId,
+            hermesAgentId: state.hermesAgentId,
+            gatewayConnectionId: state.gatewayConnectionId,
+            requestId: id,
+          }, error)
+          resolve({
+            ok: false,
+            reason: 'Gateway heartbeat send failed',
+          })
+        },
+      )
+    })
+  }
+
+  private probeOnlineGateways(): void {
+    const agentIds = new Set(
+      [...this.gateways.values()]
+        .filter(state =>
+          state.gatewayCredentialState === 'active' &&
+          state.online &&
+          state.socket?.readyState === 1)
+        .map(state => state.hermesAgentId),
+    )
+    for (const hermesAgentId of agentIds) {
+      void this.liveness.probe(hermesAgentId).catch(error => {
+        logRouter('warn', 'Gateway liveness supervisor probe failed', {
+          hermesAgentId,
+        }, error)
+      })
+    }
+  }
+
   private gatewayForAgent(hermesAgentId: string): TrackedGateway | undefined {
     return [...this.gateways.values()]
       .filter(item => item.hermesAgentId === hermesAgentId && item.gatewayCredentialState === 'active')
@@ -1370,6 +1811,39 @@ export class GatewayRegistry {
       mode: state.mode,
       ...(state.protocols?.length ? { protocols: state.protocols } : {}),
       ...(state.capabilities?.length ? { capabilities: state.capabilities } : {}),
+      operational: this.operationalMetricsForState(
+        state.hermesAgentId,
+        state,
+      ),
+    }
+  }
+
+  private operationalMetricsForState(
+    hermesAgentId: string,
+    state?: TrackedGateway,
+  ): GatewayCombinedOperationalMetrics {
+    const heartbeat = this.liveness.snapshot(hermesAgentId)
+    return {
+      ...(state?.operationalSnapshot
+        ? {
+            gateway: state.operationalSnapshot,
+            gatewayReceivedAt: state.operationalReceivedAt,
+          }
+        : {}),
+      router: {
+        heartbeat: {
+          state: heartbeat.kind,
+          ...(heartbeat.kind === 'healthy'
+            ? { rttMs: heartbeat.latencyMs }
+            : {}),
+          missStreak: heartbeat.kind === 'healthy'
+            ? 0
+            : heartbeat.kind === 'suspect'
+              ? 1
+              : 2,
+        },
+        rpc: this.requestTombstones.snapshot(hermesAgentId),
+      },
     }
   }
 }

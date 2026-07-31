@@ -132,8 +132,11 @@ export class HermesGatewayRepository {
     return this.gateways.list()
   }
 
-  async heartbeat(hermesAgentId?: string, timeoutMs = 3_000): Promise<GatewayHeartbeatResult> {
-    return this.gateways.heartbeatByAgentId(hermesAgentId, timeoutMs)
+  async heartbeat(
+    hermesAgentId?: string,
+    _timeoutMs = 3_000,
+  ): Promise<GatewayHeartbeatResult> {
+    return this.gateways.heartbeatSnapshotByAgentId(hermesAgentId)
   }
 
   async runtimeSnapshot(

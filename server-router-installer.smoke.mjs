@@ -21,6 +21,7 @@ const release = JSON.parse(await readFile(
 ))
 
 const delay = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds))
+const stage = name => console.error(`[router-installer-smoke] ${name}`)
 
 async function reserveLoopbackPort() {
   const probe = createNetServer()
@@ -87,14 +88,49 @@ function run(command, args, options = {}) {
   let output = ''
   child.stdout.setEncoding('utf8')
   child.stderr.setEncoding('utf8')
-  child.stdout.on('data', chunk => { output += String(chunk) })
-  child.stderr.on('data', chunk => { output += String(chunk) })
+  child.stdout.on('data', chunk => {
+    output += String(chunk)
+    if (options.stream) process.stderr.write(chunk)
+  })
+  child.stderr.on('data', chunk => {
+    output += String(chunk)
+    if (options.stream) process.stderr.write(chunk)
+  })
   return new Promise((resolvePromise, reject) => {
-    child.once('error', reject)
+    let settled = false
+    let timeout
+    let forcedExitTimeout
+    let timedOut = false
+    const finish = callback => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      clearTimeout(forcedExitTimeout)
+      callback()
+    }
+    child.once('error', error => finish(() => reject(error)))
     child.once('exit', (code, signal) => {
-      if (code === 0 && !signal) return resolvePromise(output)
-      reject(new Error(`${command} ${args.join(' ')} failed (${signal || code})\n${output}`))
+      finish(() => {
+        if (timedOut) {
+          reject(new Error(`${command} ${args.join(' ')} timed out\n${output}`))
+          return
+        }
+        if (code === 0 && !signal) {
+          resolvePromise(output)
+          return
+        }
+        reject(new Error(`${command} ${args.join(' ')} failed (${signal || code})\n${output}`))
+      })
     })
+    timeout = setTimeout(() => {
+      timedOut = true
+      child.kill('SIGKILL')
+      forcedExitTimeout = setTimeout(() => {
+        finish(() => reject(new Error(
+          `${command} ${args.join(' ')} did not exit after timeout\n${output}`,
+        )))
+      }, 5_000)
+    }, options.timeoutMs || 60_000)
   })
 }
 
@@ -127,7 +163,9 @@ async function waitForHealth(baseUrl, router) {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     if (router.child.exitCode !== null) throw new Error(`Installed Router exited early\n${router.output()}`)
     try {
-      const response = await fetch(`${baseUrl}/router/health`)
+      const response = await fetch(`${baseUrl}/router/health`, {
+        signal: AbortSignal.timeout(1_000),
+      })
       if (response.ok) return response.json()
     } catch {
       // Router is still starting.
@@ -139,10 +177,34 @@ async function waitForHealth(baseUrl, router) {
 
 async function stopRouter(router) {
   if (router.child.exitCode !== null || router.child.signalCode !== null) return
-  const exited = once(router.child, 'exit')
+  const exited = Promise.race([
+    once(router.child, 'exit').then(() => true),
+    delay(2_000).then(() => false),
+  ])
   router.child.kill('SIGTERM')
-  await Promise.race([exited, delay(2_000)])
-  if (router.child.exitCode === null && router.child.signalCode === null) router.child.kill('SIGKILL')
+  if (await exited) return
+
+  const forcedExit = Promise.race([
+    once(router.child, 'exit').then(() => true),
+    delay(5_000).then(() => false),
+  ])
+  router.child.kill('SIGKILL')
+  if (!await forcedExit) {
+    throw new Error(`Installed Router did not exit after forced termination\n${router.output()}`)
+  }
+}
+
+async function closeServer(server) {
+  const closed = Promise.race([
+    once(server, 'close'),
+    delay(5_000).then(() => {
+      throw new Error('Source server did not close after terminating connections')
+    }),
+  ])
+  server.close()
+  server.closeIdleConnections?.()
+  server.closeAllConnections?.()
+  await closed
 }
 
 async function postJson(url, body, headers = {}) {
@@ -150,6 +212,7 @@ async function postJson(url, body, headers = {}) {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(5_000),
   })
   const payload = await response.json()
   assert.equal(response.status, 200)
@@ -192,6 +255,7 @@ const deployedMetadataPath = join(deployedGatewayDirectory, 'gateway-release-met
 
 let router
 try {
+  stage('mismatched metadata rejection')
   const mismatchedSource = await sourceServer(JSON.stringify({
     schema: 'hermes-hub-gateway-release-metadata/v1',
     ...release,
@@ -212,9 +276,10 @@ try {
       /Gateway release metadata does not match the downloaded package manifest/,
     )
   } finally {
-    await new Promise((resolvePromise, reject) => mismatchedSource.server.close(error => error ? reject(error) : resolvePromise()))
+    await closeServer(mismatchedSource.server)
   }
 
+  stage('installer')
   await run(process.execPath, [
     installerPath,
     '--platform', process.platform,
@@ -227,8 +292,12 @@ try {
     '--router-url', baseUrl,
     '--no-start',
     '--no-autostart',
-  ])
+  ], {
+    stream: true,
+    timeoutMs: 60_000,
+  })
 
+  stage('valid metadata health')
   await access(deployedMetadataPath)
   assert.ok(source.requests.has('/gateway/gateway-release-metadata.json'))
   assert.ok(!source.requests.has('/router/gateway-release-metadata.json'))
@@ -241,6 +310,7 @@ try {
   await stopRouter(router)
   router = undefined
 
+  stage('missing metadata health')
   await unlink(deployedMetadataPath)
   router = await startRouter(workdir, installedEnvironment)
   const missingHealth = await waitForHealth(baseUrl, router)
@@ -249,15 +319,23 @@ try {
   await stopRouter(router)
   router = undefined
 
+  stage('corrupt metadata health')
   await writeFile(deployedMetadataPath, '{invalid-json')
   router = await startRouter(workdir, installedEnvironment)
   const corruptHealth = await waitForHealth(baseUrl, router)
   assert.equal(corruptHealth.gatewayPlugin.release, undefined)
   await assertPairingApprovalStillWorks(baseUrl, installedEnvironment, 'corrupt')
 } finally {
+  stage('cleanup')
   if (router) await stopRouter(router)
-  await new Promise((resolvePromise, reject) => source.server.close(error => error ? reject(error) : resolvePromise()))
-  await rm(tempRoot, { recursive: true, force: true })
+  await closeServer(source.server)
+  await rm(tempRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  })
 }
 
+stage('complete')
 console.log('Server Router installer release metadata smoke passed.')

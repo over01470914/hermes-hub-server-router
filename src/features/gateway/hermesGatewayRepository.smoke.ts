@@ -52,9 +52,15 @@ class FakeRegistry {
     return this.response
   }
 
-  async heartbeatByAgentId(): Promise<GatewayHeartbeatResult> {
+  heartbeatSnapshotByAgentId(): GatewayHeartbeatResult {
     this.heartbeatCalls += 1
-    return { ok: true, hermesAgentId, online: true, latencyMs: 1 }
+    return {
+      ok: true,
+      hermesAgentId,
+      online: true,
+      liveness: 'healthy',
+      latencyMs: 1,
+    }
   }
 }
 

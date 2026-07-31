@@ -28,6 +28,8 @@ const GATEWAY_RELEASE_METADATA = 'gateway-release-metadata.json'
 const GATEWAY_PACKAGE_PAYLOAD_FILES = Object.freeze([
   '__init__.py',
   'adapter.py',
+  'operational_metrics.py',
+  'outbound_writer.py',
   'protocol.py',
   'plugin.yaml',
   'install.mjs',
@@ -44,6 +46,7 @@ const MAX_GATEWAY_FILE_BYTES = 2 * 1024 * 1024
 const MAX_GATEWAY_PACKAGE_BYTES = 4 * 1024 * 1024
 const SERVER_FILES = [
   'README.md',
+  'pnpm-lock.yaml',
   'src/bridgeServer.ts',
   'src/core/http/boundedSseWriter.ts',
   'src/core/http/routerBasePath.ts',
@@ -58,6 +61,8 @@ const SERVER_FILES = [
   'src/features/diagnostics/diagnosticsReceipt.ts',
   'src/features/gateway/agentFeatureCapability.ts',
   'src/features/gateway/gatewayPluginSource.ts',
+  'src/features/gateway/gatewayLivenessSupervisor.ts',
+  'src/features/gateway/gatewayRequestTombstones.ts',
   'src/features/gateway/gatewayRegistry.ts',
   'src/features/gateway/hermesGatewayRepository.ts',
   'src/features/kanban/kanbanBridgeAdapter.ts',
@@ -286,6 +291,21 @@ function npmInvocation() {
   return npm ? { command: npm, prefixArgs: [] } : null
 }
 
+function corepackInvocation() {
+  const corepackCli = join(
+    dirname(process.execPath),
+    'node_modules',
+    'corepack',
+    'dist',
+    'corepack.js',
+  )
+  if (existsSync(corepackCli)) {
+    return { command: process.execPath, prefixArgs: [corepackCli] }
+  }
+  const corepack = commandExists('corepack')
+  return corepack ? { command: corepack, prefixArgs: [] } : null
+}
+
 async function boundedBytes(response, maximumBytes, label) {
   const rawLength = response.headers.get('content-length')
   if (rawLength && !/^\d+$/.test(rawLength)) fail(`${label} returned an invalid content length`)
@@ -358,11 +378,13 @@ async function downloadRuntime(baseUrl, workdir, dryRun) {
       'server-router:dev': 'tsx src/bridgeServer.ts',
       'server:check': 'tsc -p tsconfig.server.json --pretty false',
     },
-    dependencies: { ws: '^8.18.3' },
+    dependencies: {
+      tsx: '^4.20.6',
+      ws: '^8.18.3',
+    },
     devDependencies: {
       '@types/node': '^26.0.1',
       '@types/ws': '^8.18.1',
-      tsx: '^4.20.6',
       typescript: '^5.7.3',
     },
   }, null, 2) + '\n')
@@ -511,14 +533,40 @@ async function downloadGatewayPackage(baseUrl, workdir, dryRun) {
   }
 }
 
-function installDependencies(workdir, dryRun) {
-  if (process.platform !== 'win32') {
-    const pnpm = commandExists('pnpm')
-    if (pnpm) return run(pnpm, ['install', '--prod=false'], { cwd: workdir, dryRun, capture: false })
+function installDependencies(workdir, dryRun, offline) {
+  const networkArgs = offline ? ['--offline'] : []
+  const corepack = corepackInvocation()
+  if (corepack) {
+    return run(corepack.command, [
+      ...corepack.prefixArgs,
+      'pnpm',
+      'install',
+      '--prod',
+      ...networkArgs,
+    ], {
+      cwd: workdir,
+      dryRun,
+      capture: false,
+    })
+  }
+  const pnpm = commandExists('pnpm')
+  if (pnpm) {
+    return run(pnpm, ['install', '--prod', ...networkArgs], {
+      cwd: workdir,
+      dryRun,
+      capture: false,
+    })
   }
   const npm = npmInvocation()
   if (!npm) fail('npm or pnpm is required')
-  return run(npm.command, [...npm.prefixArgs, 'install', '--no-audit', '--no-fund'], { cwd: workdir, dryRun, capture: false })
+  return run(npm.command, [
+    ...npm.prefixArgs,
+    'install',
+    '--no-audit',
+    '--no-fund',
+    '--omit=dev',
+    ...networkArgs,
+  ], { cwd: workdir, dryRun, capture: false })
 }
 
 function randomPairingCode() {
@@ -770,6 +818,7 @@ Options:
   --platform <name>      linux | darwin | win32. Default: current platform
   --user <user>          Linux service user. Default: SUDO_USER/current user
   --group <group>        Linux service group. Default: same as user
+  --offline              Install dependencies from the existing package-manager cache only
   --dry-run              Print planned changes only
   --status               Show service and health status
   --uninstall            Remove autostart; leave runtime/env files
@@ -815,6 +864,7 @@ async function main() {
     group: textArg(args, 'group', user),
     noStart: boolArg(args, 'no-start'),
     noAutostart: boolArg(args, 'no-autostart'),
+    offline: boolArg(args, 'offline'),
     rotateAgentApprovalToken: boolArg(args, 'rotate-agent-approval-token'),
   }
   const dryRun = boolArg(args, 'dry-run')
@@ -836,8 +886,12 @@ async function main() {
     mkdirSync(join(config.workdir, 'dist'), { recursive: true })
   }
   await downloadRuntime(config.baseUrl, config.workdir, dryRun)
+  log('Router runtime download complete')
   await downloadGatewayPackage(config.gatewayPackageBaseUrl, config.workdir, dryRun)
-  installDependencies(config.workdir, dryRun)
+  log('Gateway package download and verification complete')
+  log('installing Router dependencies')
+  installDependencies(config.workdir, dryRun, config.offline)
+  log('Router dependency installation complete')
   updateEnvFile(config.envFile, config, dryRun)
   const runner = writeWatchdog(config, dryRun) || join(config.workdir, 'scripts', 'run-server-router-watchdog.mjs')
   if (config.noAutostart) log('autostart registration skipped')

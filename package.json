@@ -18,12 +18,12 @@
     "test": "pnpm run check && pnpm run smoke"
   },
   "dependencies": {
+    "tsx": "^4.20.6",
     "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/node": "^26.0.1",
     "@types/ws": "^8.18.1",
-    "tsx": "^4.20.6",
     "typescript": "^5.7.3"
   }
 }
