@@ -19,13 +19,13 @@ import os from 'node:os'
 
 const VERSION = '2026-07-28.1'
 const DEFAULT_BASE_URL = 'https://raw.githubusercontent.com/over01470914/hermes-hub-server-router/main/'
-const DEFAULT_GATEWAY_PACKAGE_BASE_URL = 'https://raw.githubusercontent.com/over01470914/hermes-hub-gateway-plugin/main/'
+const DEFAULT_GATEWAY_PACKAGE_BASE_URL = 'https://unpkg.com/@over01470914/hermes-hub-gateway@latest/runtime/'
 const DEFAULT_ROUTER_URL = 'https://hermes-hub.s3studio.fun'
 const GATEWAY_PACKAGE_MANIFEST_SCHEMA = 'hermes-hub-gateway-package/v1'
 const GATEWAY_PACKAGE_MANIFEST = 'package-manifest.json'
 const GATEWAY_RELEASE_METADATA_SCHEMA = 'hermes-hub-gateway-release-metadata/v1'
 const GATEWAY_RELEASE_METADATA = 'gateway-release-metadata.json'
-const GATEWAY_PACKAGE_PAYLOAD_FILES = Object.freeze([
+const GATEWAY_PACKAGE_REQUIRED_PAYLOAD_FILES = Object.freeze([
   '__init__.py',
   'adapter.py',
   'operational_metrics.py',
@@ -34,10 +34,13 @@ const GATEWAY_PACKAGE_PAYLOAD_FILES = Object.freeze([
   'plugin.yaml',
   'install.mjs',
 ])
-const GATEWAY_PACKAGE_FILES = Object.freeze([
-  ...GATEWAY_PACKAGE_PAYLOAD_FILES,
-  GATEWAY_PACKAGE_MANIFEST,
-  GATEWAY_RELEASE_METADATA,
+const GATEWAY_PACKAGE_OPTIONAL_PAYLOAD_FILES = Object.freeze([
+  'cron_protocol.py',
+  'kanban_protocol.py',
+])
+const GATEWAY_PACKAGE_ALLOWED_PAYLOAD_FILES = Object.freeze([
+  ...GATEWAY_PACKAGE_REQUIRED_PAYLOAD_FILES,
+  ...GATEWAY_PACKAGE_OPTIONAL_PAYLOAD_FILES,
 ])
 const MAX_RUNTIME_FILE_BYTES = 2 * 1024 * 1024
 const MAX_GATEWAY_MANIFEST_BYTES = 64 * 1024
@@ -425,7 +428,7 @@ function gatewayManifest(bytes) {
   if (typeof value.version !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value.version)) {
     fail('Gateway package manifest version is invalid')
   }
-  if (!Array.isArray(value.files) || value.files.length !== GATEWAY_PACKAGE_PAYLOAD_FILES.length) {
+  if (!Array.isArray(value.files) || value.files.length < GATEWAY_PACKAGE_REQUIRED_PAYLOAD_FILES.length || value.files.length > GATEWAY_PACKAGE_ALLOWED_PAYLOAD_FILES.length) {
     fail('Gateway package manifest file allowlist is invalid')
   }
   const files = new Map()
@@ -434,7 +437,7 @@ function gatewayManifest(bytes) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry) || !exactKeys(entry, ['name', 'bytes', 'sha256'])) {
       fail('Gateway package manifest file entry is invalid')
     }
-    if (!GATEWAY_PACKAGE_PAYLOAD_FILES.includes(entry.name) || files.has(entry.name)) {
+    if (!GATEWAY_PACKAGE_ALLOWED_PAYLOAD_FILES.includes(entry.name) || files.has(entry.name)) {
       fail('Gateway package manifest file allowlist is invalid')
     }
     if (!Number.isSafeInteger(entry.bytes) || entry.bytes <= 0 || entry.bytes > MAX_GATEWAY_FILE_BYTES) {
@@ -447,7 +450,11 @@ function gatewayManifest(bytes) {
     if (total > MAX_GATEWAY_PACKAGE_BYTES) fail('Gateway package exceeds the total size limit')
     files.set(entry.name, entry)
   }
-  if (GATEWAY_PACKAGE_PAYLOAD_FILES.some(name => !files.has(name))) {
+  if (GATEWAY_PACKAGE_REQUIRED_PAYLOAD_FILES.some(name => !files.has(name))) {
+    fail('Gateway package manifest file allowlist is invalid')
+  }
+  const optionalCount = GATEWAY_PACKAGE_OPTIONAL_PAYLOAD_FILES.filter(name => files.has(name)).length
+  if (optionalCount !== 0 && optionalCount !== GATEWAY_PACKAGE_OPTIONAL_PAYLOAD_FILES.length) {
     fail('Gateway package manifest file allowlist is invalid')
   }
   return { files, version: value.version }
@@ -486,7 +493,7 @@ function gatewayReleaseMetadata(bytes, manifestBytes, manifestVersion) {
 }
 
 async function downloadGatewayPackage(baseUrl, workdir, dryRun) {
-  const target = join(workdir, 'apps', 'hermes-hub-gateway-plugin')
+  const target = join(workdir, 'apps', 'hermes-hub-gateway-runtime')
   if (dryRun) {
     log(`dry-run download verified Gateway package from ${baseUrl} -> ${target}`)
     return
@@ -507,7 +514,7 @@ async function downloadGatewayPackage(baseUrl, workdir, dryRun) {
     [GATEWAY_PACKAGE_MANIFEST, manifestBytes],
     [GATEWAY_RELEASE_METADATA, releaseMetadataBytes],
   ])
-  for (const name of GATEWAY_PACKAGE_PAYLOAD_FILES) {
+  for (const name of manifest.files.keys()) {
     const expected = manifest.files.get(name)
     const bytes = await download(sourceFileUrl(baseUrl, name), expected.bytes, `Gateway package file ${name}`)
     if (bytes.length !== expected.bytes) fail(`Gateway package file ${name} has an invalid byte length`)
@@ -522,7 +529,7 @@ async function downloadGatewayPackage(baseUrl, workdir, dryRun) {
   rmSync(displaced, { recursive: true, force: true })
   mkdirSync(stage, { recursive: true })
   try {
-    for (const name of GATEWAY_PACKAGE_FILES) writeFile(join(stage, name), verified.get(name))
+    for (const [name, bytes] of verified) writeFile(join(stage, name), bytes)
     if (existsSync(target)) renameSync(target, displaced)
     renameSync(stage, target)
     rmSync(displaced, { recursive: true, force: true })
@@ -855,7 +862,7 @@ async function main() {
     gatewayReleaseMetadataPath: join(
       workdir,
       'apps',
-      'hermes-hub-gateway-plugin',
+      'hermes-hub-gateway-runtime',
       GATEWAY_RELEASE_METADATA,
     ),
     host: textArg(args, 'host', '127.0.0.1'),

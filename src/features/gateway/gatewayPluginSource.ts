@@ -4,12 +4,8 @@ import { dirname, isAbsolute, join } from 'node:path'
 
 /**
  * Public distribution metadata only. The Router never serves Gateway runtime
- * files: agents load skills from GitHub and install the executable package
- * from npm.
+ * files: hosts install the executable package from npm.
  */
-export const gatewayPluginRepositoryUrl =
-  'https://github.com/over01470914/hermes-hub-gateway-plugin'
-
 const RELEASE_METADATA_SCHEMA = 'hermes-hub-gateway-release-metadata/v1'
 const RELEASE_METADATA_MAX_BYTES = 16 * 1024
 const PACKAGE_MANIFEST_MAX_BYTES = 64 * 1024

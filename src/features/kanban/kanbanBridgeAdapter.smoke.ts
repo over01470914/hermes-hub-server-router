@@ -342,7 +342,7 @@ assert.deepEqual(runRequest, {
   operation: 'dispatch.run',
   permission: 'execute',
   method: 'POST',
-  upstreamPath: 'api/kanban/dispatch?board=default&dry_run=0&max=4',
+  upstreamPath: 'api/kanban/dispatch?board=default&dry_run=0&confirmed=1&max=4',
   requestId: 'dispatch-7',
   retryPolicy: 'never'
 })

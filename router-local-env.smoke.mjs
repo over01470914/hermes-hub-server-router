@@ -318,7 +318,7 @@ try {
     '--pairing-config', cliPairingConfigPath,
     '--installer', verifiedInstaller,
     '--router', 'http://127.0.0.1:4320',
-    '--source-base', 'http://127.0.0.1:4320/apps/hermes-hub-gateway-plugin/',
+    '--source-base', 'http://127.0.0.1:4320/apps/hermes-hub-gateway-runtime/',
     '--request-id', 'pair_gateway_launcher_smoke',
     '--enrollment-ticket', `enr_${'a'.repeat(32)}.${'b'.repeat(43)}`,
   ], {
@@ -334,7 +334,7 @@ try {
     '--router', 'http://127.0.0.1:4320',
     '--request-id', 'pair_gateway_launcher_smoke',
     '--enrollment-ticket', `enr_${'a'.repeat(32)}.${'b'.repeat(43)}`,
-    '--source-base', 'http://127.0.0.1:4320/apps/hermes-hub-gateway-plugin/',
+    '--source-base', 'http://127.0.0.1:4320/apps/hermes-hub-gateway-runtime/',
   ])
   assert.equal(launchedInstaller.stdout.includes(regeneratedCliToken), false)
   assert.equal(launchedInstaller.stderr.includes(regeneratedCliToken), false)

@@ -14,8 +14,8 @@ assert.equal(
   '/router/health',
 )
 assert.equal(
-  stripRouterBasePath('/router-prefix/apps/hermes-hub-gateway-plugin/install.mjs', '/router-prefix'),
-  '/apps/hermes-hub-gateway-plugin/install.mjs',
+  stripRouterBasePath('/router-prefix/apps/hermes-hub-gateway-runtime/install.mjs', '/router-prefix'),
+  '/apps/hermes-hub-gateway-runtime/install.mjs',
 )
 assert.equal(
   stripRouterBasePath('/router-other-prefix/router/health', '/router-prefix'),

@@ -22,13 +22,13 @@ import {
 import { requireGatewayBoundBridge } from './core/security/bridgePolicy.js'
 import { DiagnosticsPayloadError, normalizeDiagnosticsReceipt, summarizeDiagnosticsReceipt } from './features/diagnostics/diagnosticsReceipt.js'
 import {
-  gatewayPluginRepositoryUrl,
   readGatewayPluginReleaseArtifact,
 } from './features/gateway/gatewayPluginSource.js'
 import {
   AGENT_FEATURE_GATEWAY_CONTRACT_VERSION,
   agentFeatureGatewayAvailable,
   type AgentFeature,
+  type AgentFeaturePermission,
 } from './features/gateway/agentFeatureCapability.js'
 import { GatewayRegistry, type GatewayActivationReservation, type GatewayRpcResponse } from './features/gateway/gatewayRegistry.js'
 import { HermesGatewayRepository } from './features/gateway/hermesGatewayRepository.js'
@@ -82,6 +82,10 @@ if (agentApprovalToken.length < 32) {
 const defaultChatRunTimeoutMs = 180_000
 const chatRunProxyTimeoutBufferMs = 30_000
 const chatRunSseKeepAliveMs = 15_000
+// Hermes may revalidate authenticated provider catalogs on `refresh=1`.
+// Keep this below the Flutter HTTP client's 30 second request timeout while
+// allowing substantially more time than the generic 10 second Gateway RPC.
+const modelCatalogProxyTimeoutMs = 28_000
 const maxPendingRealtimeFrames = 256
 const maxPendingRealtimeBytes = 1024 * 1024
 const maxDownstreamSseQueueItems = 256
@@ -563,7 +567,10 @@ async function proxyModelOptionsViaGateway(
   path: string
 }> {
   const path = modelOptionsPath(search)
-  const proxied = await proxyViaGateway(payload, path, { sourceHeaders })
+  const proxied = await proxyViaGateway(payload, path, {
+    sourceHeaders,
+    timeoutMs: modelCatalogProxyTimeoutMs,
+  })
   logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge available models received', {
     requestId: requestIdValue,
     path: logPath(path),
@@ -850,8 +857,6 @@ function requireRealtimePayload(request: IncomingMessage) {
   return verifyBridgeToken(token, config)
 }
 
-type AgentFeaturePermission = 'read' | 'write' | 'execute'
-
 function hasAgentFeaturePermission(
   payload: BridgeTokenPayload,
   feature: AgentFeature,
@@ -1069,11 +1074,12 @@ const agentFeatureProbeCache = new Map<string, { available: boolean; expiresAt: 
 
 async function agentFeatureAvailable(
   payload: BridgeTokenPayload,
-  feature: AgentFeature
+  feature: AgentFeature,
+  permission: AgentFeaturePermission
 ): Promise<boolean> {
-  if (!hasAgentFeaturePermission(payload, feature, 'read')) return false
+  if (!hasAgentFeaturePermission(payload, feature, permission)) return false
   const hermesAgentId = selectedHermesAgentId(payload)
-  const key = `${hermesAgentId}:${feature}`
+  const key = `${hermesAgentId}:${feature}:${permission}`
   const now = Date.now()
   const cached = agentFeatureProbeCache.get(key)
   if (cached && cached.expiresAt > now) return cached.available
@@ -1081,7 +1087,11 @@ async function agentFeatureAvailable(
   // Do not use a feature-shaped HTTP probe as evidence of a public contract:
   // it could be a WebUI/private route. The Gateway hello is the only authority
   // for host capabilities and is bound to this Hermes Agent identity.
-  const available = agentFeatureGatewayAvailable(hermesGateways.get(hermesAgentId), feature)
+  const available = agentFeatureGatewayAvailable(
+    hermesGateways.get(hermesAgentId),
+    feature,
+    permission
+  )
   agentFeatureProbeCache.set(key, { available, expiresAt: now + (available ? 15_000 : 5_000) })
   return available
 }
@@ -1985,7 +1995,6 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
       hermesAgentsOnline: onlineAgents.size,
       pairing: 'prompt-code-claim/v2',
       gatewayPlugin: {
-        skillsRepositoryUrl: gatewayPluginRepositoryUrl,
         ...(gatewayRelease ? {
           npmPackage: {
             name: gatewayRelease.packageName,
@@ -2494,9 +2503,20 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (pathname === '/bridge/capabilities' && request.method === 'GET') {
-    const [cronAvailable, kanbanAvailable] = await Promise.all([
-      agentFeatureAvailable(payload, 'cron'),
-      agentFeatureAvailable(payload, 'kanban')
+    const [
+      cronRead,
+      cronWrite,
+      cronExecute,
+      kanbanRead,
+      kanbanWrite,
+      kanbanExecute,
+    ] = await Promise.all([
+      agentFeatureAvailable(payload, 'cron', 'read'),
+      agentFeatureAvailable(payload, 'cron', 'write'),
+      agentFeatureAvailable(payload, 'cron', 'execute'),
+      agentFeatureAvailable(payload, 'kanban', 'read'),
+      agentFeatureAvailable(payload, 'kanban', 'write'),
+      agentFeatureAvailable(payload, 'kanban', 'execute'),
     ])
     const sessionResourcesAvailable = gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions')
     sendJson(response, 200, {
@@ -2524,14 +2544,14 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           provider: jpushProvider.configured ? 'jpush' : null,
         },
         cron: {
-          read: cronAvailable && hasAgentFeaturePermission(payload, 'cron', 'read'),
-          write: cronAvailable && hasAgentFeaturePermission(payload, 'cron', 'write'),
-          execute: cronAvailable && hasAgentFeaturePermission(payload, 'cron', 'execute')
+          read: cronRead,
+          write: cronWrite,
+          execute: cronExecute
         },
         kanban: {
-          read: kanbanAvailable && hasAgentFeaturePermission(payload, 'kanban', 'read'),
-          write: kanbanAvailable && hasAgentFeaturePermission(payload, 'kanban', 'write'),
-          execute: kanbanAvailable && hasAgentFeaturePermission(payload, 'kanban', 'execute')
+          read: kanbanRead,
+          write: kanbanWrite,
+          execute: kanbanExecute
         }
       }
     })

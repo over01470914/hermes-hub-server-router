@@ -250,7 +250,7 @@ await assert.rejects(
 )
 const source = await sourceServer()
 const baseUrl = `http://127.0.0.1:${routerPort}`
-const deployedGatewayDirectory = join(workdir, 'apps', 'hermes-hub-gateway-plugin')
+const deployedGatewayDirectory = join(workdir, 'apps', 'hermes-hub-gateway-runtime')
 const deployedMetadataPath = join(deployedGatewayDirectory, 'gateway-release-metadata.json')
 
 let router

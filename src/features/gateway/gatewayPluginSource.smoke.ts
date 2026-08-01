@@ -6,14 +6,8 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
-  gatewayPluginRepositoryUrl,
   readGatewayPluginReleaseArtifact,
 } from './gatewayPluginSource.js'
-
-assert.equal(
-  gatewayPluginRepositoryUrl,
-  'https://github.com/over01470914/hermes-hub-gateway-plugin',
-)
 
 const routerRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const gatewayPackageRoot = join(routerRoot, '..', 'hermes-hub-gateway-npm')

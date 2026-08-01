@@ -120,7 +120,13 @@ export type PairingClaimValidator = (claim: PairingClaim, gatewayId: string) => 
 const defaultCapabilities = [
   'sessions:list',
   'messages:read',
-  'chat:run'
+  'chat:run',
+  'cron:read',
+  'cron:write',
+  'cron:execute',
+  'kanban:read',
+  'kanban:write',
+  'kanban:execute'
 ]
 
 const allowedCapabilities = new Set([

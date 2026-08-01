@@ -218,16 +218,60 @@ assert.equal(externalRun?.status, 409)
 assert.equal(externalRun?.body.code, 'unsupported_delivery')
 assert.equal(external.calls.length, 1)
 
-for (const pathname of [
-  '/bridge/cron/jobs/a1b2c3d4e5f6/runs',
-  '/bridge/cron/jobs/a1b2c3d4e5f6/runs/2026-07-12T090000.md',
-]) {
-  const history = fakeProxy()
-  const historyResult = await handle(history, { method: 'GET', pathname })
-  assert.equal(historyResult?.status, 501)
-  assert.equal(historyResult?.body.code, 'feature_unsupported')
-  assert.equal(history.calls.length, 0)
-}
+const history = fakeProxy()
+history.push(ok({
+  runs: [{
+    run_id: 'run_1',
+    job_id: 'foreign_job',
+    status: 'failed',
+    snippet: 'A safe preview',
+    error: 'Failed at C:/private/output/run_1.md with provider-secret',
+    started_at: '2026-08-01T01:00:00Z',
+    finished_at: '2026-08-01T01:01:00Z',
+    content_bytes: 1234,
+    usage: { total_tokens: 42, provider_key: 99 },
+    output_path: 'C:/private/output/run_1.md',
+  }],
+}))
+const historyResult = await handle(history, {
+  method: 'GET',
+  pathname: '/bridge/cron/jobs/a1b2c3d4e5f6/runs',
+  searchParams: new URLSearchParams('limit=20'),
+})
+assert.equal(historyResult?.status, 200)
+assert.deepEqual(history.calls, [{
+  method: 'GET',
+  path: '/api/jobs/a1b2c3d4e5f6/runs?limit=20',
+}])
+const historyRun = (historyResult?.body.runs as Array<Record<string, unknown>>)[0]
+assert.equal(historyRun?.id, 'run_1')
+assert.equal(historyRun?.job_id, 'a1b2c3d4e5f6')
+assert.equal(historyRun?.error_category, 'upstream')
+assert.equal(historyRun?.error_message, 'Cron run failed (upstream)')
+assert.equal(historyRun?.output, undefined)
+assert.deepEqual(historyRun?.usage, { total_tokens: 42 })
+assert(!JSON.stringify(historyResult).includes('C:/private'))
+assert(!JSON.stringify(historyResult).includes('provider-secret'))
+
+const detail = fakeProxy()
+detail.push(ok({
+  run: {
+    id: 'run_1',
+    status: 'completed',
+    output: 'Full run output',
+    usage: { input_tokens: 10, output_tokens: 20 },
+  },
+}))
+const detailResult = await handle(detail, {
+  method: 'GET',
+  pathname: '/bridge/cron/jobs/a1b2c3d4e5f6/runs/run_1',
+})
+assert.equal(detailResult?.status, 200)
+assert.deepEqual(detail.calls, [{
+  method: 'GET',
+  path: '/api/jobs/a1b2c3d4e5f6/runs/run_1',
+}])
+assert.equal((detailResult?.body.run as Record<string, unknown>).output, 'Full run output')
 
 const unavailable = fakeProxy()
 unavailable.push({ status: 501, body: { error: 'Cron module not available' } })
@@ -247,7 +291,7 @@ console.log(JSON.stringify({
     localOnlyMutations: true,
     shapedAndRedactedResponses: true,
     exactOnceRunDispatch: true,
-    unsupportedRunHistory: true,
+    shapedRunHistory: true,
     featureUnavailable: true,
     permissionMapping: true,
   },

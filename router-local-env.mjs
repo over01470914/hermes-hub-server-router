@@ -591,7 +591,7 @@ function verifiedInstallerPath(value) {
 function localRouterPackageSourceBase(value, routerUrl) {
   if (!value) return ''
   const sourceBase = loopbackRouterUrl(value)
-  const expected = `${routerUrl}/apps/hermes-hub-gateway-plugin`
+  const expected = `${routerUrl}/apps/hermes-hub-gateway-runtime`
   if (sourceBase !== expected) {
     throw new Error('The local Gateway launcher only accepts the exact package mirror advertised by its loopback Router.')
   }

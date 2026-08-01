@@ -55,17 +55,48 @@ function modelProbeRequested(payload: GatewayRpcRequest): boolean {
 
 export function requiredGatewayCapability(payload: GatewayRpcRequest): string | null {
   const path = normalizedPath(payload.path)
+  const httpMethod = (payload.method || 'GET').toUpperCase()
   if (path === '/api/sessions' || path.startsWith('/api/sessions/')) return 'sessions'
   if (path === '/api/session/usage') return 'sessions.usage'
   if (path === '/api/model/options') return modelProbeRequested(payload) ? 'models.probe' : 'models'
   if (path === '/v1/models') return 'models'
-  if (path === '/api/jobs' || path.startsWith('/api/jobs/')) return 'cron'
-  if (path === '/api/kanban/boards' || path === '/api/kanban/board') return 'kanban.read'
-  if (/^\/api\/kanban\/tasks\/[^/]+\/(block|unblock)$/.test(path)) return 'kanban.write.block'
-  if (path.startsWith('/api/kanban/tasks/')) {
-    return (payload.method || 'GET').toUpperCase() === 'GET' ? 'kanban.read' : 'kanban.write.draft'
+  if (path === '/api/jobs') {
+    if (httpMethod === 'GET' || httpMethod === 'POST') return 'cron'
+    return null
   }
-  if (path === '/api/kanban/tasks') return 'kanban.write.draft'
+  if (/^\/api\/jobs\/[^/]+$/.test(path)) {
+    if (httpMethod === 'GET' || httpMethod === 'PATCH' || httpMethod === 'DELETE') return 'cron'
+    return null
+  }
+  if (/^\/api\/jobs\/[^/]+\/(pause|resume)$/.test(path)) {
+    return httpMethod === 'POST' ? 'cron' : null
+  }
+  if (/^\/api\/jobs\/[^/]+\/run$/.test(path)) {
+    return httpMethod === 'POST' ? 'cron' : null
+  }
+  if (/^\/api\/jobs\/[^/]+\/runs(?:\/[^/]+)?$/.test(path)) {
+    return httpMethod === 'GET' ? 'cron' : null
+  }
+  if (path === '/api/kanban/boards' || path === '/api/kanban/board') {
+    return httpMethod === 'GET' ? 'kanban.read' : null
+  }
+  if (/^\/api\/kanban\/tasks\/[^/]+$/.test(path)) {
+    if (httpMethod === 'GET') return 'kanban.read'
+    if (httpMethod === 'PATCH') return 'kanban.write'
+    return null
+  }
+  if (path === '/api/kanban/tasks') {
+    return httpMethod === 'POST' ? 'kanban.write' : null
+  }
+  if (/^\/api\/kanban\/tasks\/[^/]+\/(block|unblock|comments)$/.test(path)) {
+    return httpMethod === 'POST' ? 'kanban.write' : null
+  }
+  if (path === '/api/kanban/links') {
+    return httpMethod === 'POST' || httpMethod === 'DELETE' ? 'kanban.write' : null
+  }
+  if (path === '/api/kanban/dispatch') {
+    return httpMethod === 'POST' ? 'kanban.execute' : null
+  }
   if (path === '/v1/capabilities' || path === '/v1/health' || path === '/health') return 'health'
   if (path !== '/api/ws') return null
 

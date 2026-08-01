@@ -53,6 +53,21 @@ export interface CronJobDto {
   last_error_category: CronErrorCategory | null
 }
 
+export interface CronRunDto {
+  id: string
+  job_id: string
+  status: string
+  preview: string
+  output?: string
+  error_message: string | null
+  error_category: CronErrorCategory | null
+  started_at: string | null
+  finished_at: string | null
+  output_bytes: number | null
+  usage: Record<string, number>
+  truncated: boolean
+}
+
 export type CronErrorCategory =
   | 'authentication'
   | 'conflict'
@@ -104,6 +119,8 @@ const MAX_PROMPT_INPUT_LENGTH = 5000
 const MAX_PROMPT_BYTES = 64 * 1024
 const DEFAULT_RUN_LIMIT = 50
 const MAX_RUN_LIMIT = 100
+const MAX_RUN_PREVIEW_BYTES = 4 * 1024
+const MAX_RUN_OUTPUT_BYTES = 256 * 1024
 
 class CronBridgeFailure extends Error {
   constructor(readonly response: CronBridgeResponse) {
@@ -285,15 +302,28 @@ class CronBridgeAdapterImpl implements CronBridgeAdapter {
   }
 
   private async listRuns(jobId: string, limit: number): Promise<CronBridgeResponse> {
-    void jobId
-    void limit
-    throw unsupportedCronRunHistory()
+    const response = await this.proxy({
+      method: 'GET',
+      path: `/api/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}`
+    }, 'cron.runs.list')
+    const payload = requireSuccessPayload(response, 'cron.runs.list')
+    if (!Array.isArray(payload.runs)) throw invalidUpstreamResponse()
+    const runs = payload.runs
+      .slice(0, limit)
+      .map(run => normalizeCronRun(run, jobId, false))
+      .filter(isPresent)
+    return { status: 200, body: { runs } }
   }
 
   private async getRun(jobId: string, runId: string): Promise<CronBridgeResponse> {
-    void jobId
-    void runId
-    throw unsupportedCronRunHistory()
+    const response = await this.proxy({
+      method: 'GET',
+      path: `/api/jobs/${encodeURIComponent(jobId)}/runs/${encodeURIComponent(runId)}`
+    }, 'cron.runs.detail')
+    const payload = requireSuccessPayload(response, 'cron.runs.detail')
+    const run = normalizeCronRun(payload.run, jobId, true)
+    if (!run || run.id !== runId) throw invalidUpstreamResponse()
+    return { status: 200, body: { run } }
   }
 
   private async requireManageableJob(jobId: string, operation: string): Promise<Record<string, unknown>> {
@@ -513,7 +543,7 @@ function isJobId(value: string): boolean {
 }
 
 function isRunId(value: string): boolean {
-  return RUN_ID_PATTERN.test(value) && value !== '.' && value !== '..' && value.endsWith('.md')
+  return RUN_ID_PATTERN.test(value) && value !== '.' && value !== '..'
 }
 
 function validateCreateBody(body: unknown): {
@@ -668,7 +698,7 @@ function requireSuccessPayload(
   }
   if (response.status < 200 || response.status >= 300) {
     if (response.status === 404) {
-      if (operation.includes('list') || !isJobOrRunNotFoundPayload(payload)) {
+      if (operation === 'cron.jobs.list' && !isJobOrRunNotFoundPayload(payload)) {
         throw featureUnavailable()
       }
       throw new CronBridgeFailure(bridgeError(404, 'not_found', 'Cron job or run not found'))
@@ -723,6 +753,77 @@ function normalizeCronJob(raw: Record<string, unknown>): CronJobDto | null {
       ? categorizeError(raw.last_error)
       : null
   }
+}
+
+function normalizeCronRun(
+  value: unknown,
+  jobId: string,
+  includeOutput: boolean
+): CronRunDto | null {
+  const raw = asRecord(value)
+  if (!raw) return null
+  const id = [raw.id, raw.run_id, raw.filename]
+    .find(candidate => typeof candidate === 'string' && isRunId(candidate))
+  if (typeof id !== 'string') return null
+
+  const rawOutput = [raw.output, raw.content, raw.response]
+    .find(candidate => typeof candidate === 'string')
+  const outputText = typeof rawOutput === 'string' ? rawOutput : ''
+  const declaredPreview = [raw.preview, raw.snippet, raw.output_preview]
+    .find(candidate => typeof candidate === 'string')
+  const previewSource = typeof declaredPreview === 'string' ? declaredPreview : outputText
+  const preview = truncateUtf8(previewSource, MAX_RUN_PREVIEW_BYTES)
+  const output = truncateUtf8(outputText, MAX_RUN_OUTPUT_BYTES)
+  const rawError = [raw.error, raw.error_message].find(candidate => typeof candidate === 'string')
+  const errorCategory = typeof rawError === 'string' && rawError.trim()
+    ? categorizeError(rawError)
+    : null
+  const declaredBytes = nonNegativeInteger(raw.output_bytes ?? raw.content_bytes ?? raw.bytes ?? raw.size)
+
+  const dto: CronRunDto = {
+    id,
+    job_id: jobId,
+    status: optionalShortString(raw.status, 64) || (errorCategory ? 'failed' : 'unknown'),
+    preview: preview.value,
+    error_message: errorCategory ? `Cron run failed (${errorCategory})` : null,
+    error_category: errorCategory,
+    started_at: optionalShortString(
+      raw.started_at ?? raw.timestamp ?? raw.created_at ?? raw.modified,
+      128
+    ),
+    finished_at: optionalShortString(raw.finished_at ?? raw.completed_at, 128),
+    output_bytes: declaredBytes ?? (outputText ? Buffer.byteLength(outputText, 'utf8') : null),
+    usage: normalizeCronRunUsage(raw.usage),
+    truncated: raw.truncated === true || preview.truncated || (includeOutput && output.truncated)
+  }
+  if (includeOutput) dto.output = output.value
+  return dto
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null
+}
+
+function normalizeCronRunUsage(value: unknown): Record<string, number> {
+  const input = asRecord(value)
+  if (!input) return {}
+  const allowed = [
+    'input_tokens',
+    'output_tokens',
+    'total_tokens',
+    'cached_tokens',
+    'duration_ms'
+  ]
+  const output: Record<string, number> = {}
+  for (const key of allowed) {
+    const number = input[key]
+    if (typeof number === 'number' && Number.isFinite(number) && number >= 0) {
+      output[key] = number
+    }
+  }
+  return output
 }
 
 function normalizeSchedule(value: unknown): string | CronJobScheduleDto | null {
@@ -822,14 +923,6 @@ function featureUnavailable(): CronBridgeFailure {
     503,
     'feature_unavailable',
     'Cron is unavailable on the connected Hermes host'
-  ))
-}
-
-function unsupportedCronRunHistory(): CronBridgeFailure {
-  return new CronBridgeFailure(bridgeError(
-    501,
-    'feature_unsupported',
-    'Cron run history is not exposed by the Hermes Gateway API'
   ))
 }
 

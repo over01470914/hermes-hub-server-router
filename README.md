@@ -137,7 +137,6 @@ pnpm server:check
 pnpm smoke:push-notifications
 pnpm gateway:test
 pnpm smoke:router-contract
-pnpm smoke:mock-hub
 ```
 
 ## Source layout

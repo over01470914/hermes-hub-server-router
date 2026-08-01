@@ -82,6 +82,17 @@ assert.equal(
 )
 assert.equal(requiredGatewayCapability(rpc('model.options', { probe: true })), 'models.probe')
 assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/model/options' }), 'models')
+assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/jobs' }), 'cron')
+assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/jobs/job_1/runs?limit=20' }), 'cron')
+assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/jobs/job_1/runs/run_1' }), 'cron')
+assert.equal(requiredGatewayCapability({ method: 'POST', path: '/api/jobs/job_1/run' }), 'cron')
+assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/kanban/boards' }), 'kanban.read')
+assert.equal(requiredGatewayCapability({ method: 'PATCH', path: '/api/kanban/tasks/task_1' }), 'kanban.write')
+assert.equal(requiredGatewayCapability({ method: 'POST', path: '/api/kanban/tasks/task_1/comments' }), 'kanban.write')
+assert.equal(requiredGatewayCapability({ method: 'DELETE', path: '/api/kanban/links' }), 'kanban.write')
+assert.equal(requiredGatewayCapability({ method: 'POST', path: '/api/kanban/dispatch?dry_run=0' }), 'kanban.execute')
+assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/kanban/dispatch' }), null)
+assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/kanban/private' }), null)
 
 {
   const gateway = new FakeRegistry(state(['models.probe']))
@@ -118,6 +129,21 @@ assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/model/option
   )
   await connections.heartbeat(hermesAgentId)
   assert.equal(gateway.heartbeatCalls, 1)
+}
+
+{
+  const gateway = new FakeRegistry(state(['kanban.read']))
+  const connections = repository(gateway)
+  await connections.request(hermesAgentId, { method: 'GET', path: '/api/kanban/boards' })
+  await assert.rejects(
+    connections.request(hermesAgentId, { method: 'POST', path: '/api/kanban/tasks', bodyBase64: 'e30=' }),
+    /required capability: kanban.write/,
+  )
+  await assert.rejects(
+    connections.request(hermesAgentId, { method: 'POST', path: '/api/kanban/dispatch?dry_run=1' }),
+    /required capability: kanban.execute/,
+  )
+  assert.equal(gateway.requestCalls, 1)
 }
 
 {

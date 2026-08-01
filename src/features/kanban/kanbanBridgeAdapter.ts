@@ -378,6 +378,7 @@ function dispatchPlan(
     appendQuery('api/kanban/dispatch', [
       ['board', board],
       ['dry_run', mode === 'preview'],
+      ['confirmed', mode === 'run' ? true : undefined],
       ['max', max]
     ])
   )
@@ -387,8 +388,8 @@ function dispatchPlan(
 }
 
 /**
- * Converts the public, shaped Hermes Hub Kanban API into the narrow WebUI
- * Kanban bridge calls. Unknown public routes are rejected and client query or
+ * Converts the public, shaped Hermes Hub Kanban API into the narrow public
+ * Agent Kanban API. Unknown public routes are rejected and client query or
  * body fields are never copied through wholesale.
  */
 export function planKanbanBridgeRequest(input: KanbanBridgeRequestInput): PlannedKanbanBridgeRequest | null {

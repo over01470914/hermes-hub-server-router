@@ -14,7 +14,8 @@ const featureCapabilities = [
 const defaultChatCapabilities = [
   'sessions:list',
   'messages:read',
-  'chat:run'
+  'chat:run',
+  ...featureCapabilities
 ]
 
 function createStore(): InMemoryPairingStore {
@@ -24,12 +25,12 @@ function createStore(): InMemoryPairingStore {
   )
 }
 
-function assertFeatureDefaultDeny(capabilities: string[]): void {
+function assertFeatureDefaultEnabled(capabilities: string[]): void {
   for (const capability of featureCapabilities) {
     assert.equal(
       capabilities.includes(capability),
-      false,
-      `unexpected implicit feature grant: ${capability}`
+      true,
+      `missing new-pairing feature grant: ${capability}`
     )
   }
 }
@@ -41,7 +42,7 @@ assert.deepEqual(
   defaultChatCapabilities,
   'all currently supported chat capabilities are granted by default'
 )
-assertFeatureDefaultDeny(missing.capabilities)
+assertFeatureDefaultEnabled(missing.capabilities)
 
 const emptyStore = createStore()
 const empty = emptyStore.create({
@@ -49,7 +50,18 @@ const empty = emptyStore.create({
   capabilities: []
 })
 assert.deepEqual(empty.capabilities, defaultChatCapabilities)
-assertFeatureDefaultDeny(empty.capabilities)
+assertFeatureDefaultEnabled(empty.capabilities)
+
+const previousGrantStore = createStore()
+const previousGrantSet = previousGrantStore.create({
+  user: 'previous-grant-set',
+  capabilities: ['sessions:list', 'messages:read', 'chat:run']
+})
+assert.deepEqual(
+  previousGrantSet.capabilities,
+  ['sessions:list', 'messages:read', 'chat:run'],
+  'an explicit previous grant set must not be silently expanded'
+)
 
 const explicitStore = createStore()
 const explicit = explicitStore.create({
@@ -128,8 +140,9 @@ assert.match(fallbackPrompt, /Hermes Hub Gateway pairing/)
 console.log(JSON.stringify({
   ok: true,
   checks: [
-    'missing capabilities keep agent features denied',
-    'empty capabilities keep agent features denied',
+    'new pairing requests default to all Cron and Kanban grants',
+    'empty capability requests receive the current default grants',
+    'explicit previous grant sets are not silently expanded',
     'explicit feature grants are preserved and deduplicated',
     'pairing claims preserve only requested grants',
     'Router base paths are preserved without trusting Client input',

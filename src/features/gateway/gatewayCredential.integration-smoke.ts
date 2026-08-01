@@ -9,9 +9,6 @@ import { fileURLToPath } from 'node:url'
 
 import { WebSocket } from 'ws'
 
-import {
-  gatewayPluginRepositoryUrl,
-} from './gatewayPluginSource.js'
 
 const delay = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds))
 
@@ -248,7 +245,6 @@ try {
 
   const health = await fetchJson<{
     gatewayPlugin: {
-      skillsRepositoryUrl: string
       npmPackage: {
         name: string
         version: string
@@ -262,7 +258,6 @@ try {
     }
   }>(`${baseUrl}/router/health`)
   assert.deepEqual(health.gatewayPlugin, {
-    skillsRepositoryUrl: gatewayPluginRepositoryUrl,
     npmPackage: {
       name: gatewayRelease.packageName,
       version: gatewayRelease.packageVersion,
@@ -271,7 +266,7 @@ try {
     release: gatewayRelease,
   })
   assert.equal(
-    (await fetch(`${baseUrl}/apps/hermes-hub-gateway-plugin/install.mjs`)).status,
+    (await fetch(`${baseUrl}/apps/hermes-hub-gateway-runtime/install.mjs`)).status,
     404,
     'Router must not serve executable Gateway runtime files',
   )
