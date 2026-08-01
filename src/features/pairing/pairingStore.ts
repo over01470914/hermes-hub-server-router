@@ -307,22 +307,62 @@ export function buildGatewayEnrollmentTicket(secret: string, record: PairingRequ
   return `enr_${record.enrollmentNonce}.${signature}`
 }
 
+type PairingPromptLocale = 'english' | 'traditionalChinese' | 'simplifiedChinese'
+
+function pairingPromptLocale(value: string | undefined): PairingPromptLocale {
+  const normalized = (value || '').trim().toLowerCase().replaceAll('_', '-')
+  if (['traditionalchinese', 'zh-tw', 'zh-hant', 'zh-hk', 'zh-mo'].includes(normalized)) {
+    return 'traditionalChinese'
+  }
+  if (['simplifiedchinese', 'zh-cn', 'zh-hans', 'zh-sg'].includes(normalized)) {
+    return 'simplifiedChinese'
+  }
+  return 'english'
+}
+
 export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicket = ''): string {
   const router = record.routerUrl.replace(/\/$/, '')
   const enrollmentArgument = enrollmentTicket
     ? ` --enrollment-ticket "${enrollmentTicket}"`
     : ''
-  return [
-    'Hermes Hub Gateway pairing request',
-    '',
-    'Run the installed Hermes Hub Gateway CLI once:',
-    `   hermes-hub-gateway pair --runtime hermes --router "${router}" --request-id "${record.requestId}"${enrollmentArgument}`,
-    '',
-    'A Router or Gateway version/SHA difference does not block pairing. Update the Gateway only if it is missing or the feature you need is unavailable.',
-    'If permission is needed, request native approval for that exact command. Do not expose secrets.',
-    'After pair returns the 8-digit code, return it to the Client and state: Gateway restart required — restart Hermes Gateway once from the Client.',
-    'Never run `hermes gateway restart`, stop Hermes Gateway, uninstall the plugin, or manage a service from this pairing task.',
-  ].join('\n')
+  const pairCommand = `hermes-hub-gateway pair --runtime hermes --router "${router}" --request-id "${record.requestId}"${enrollmentArgument}`
+  const npmCommand = 'npm install -g @over01470914/hermes-hub-gateway@latest'
+
+  switch (pairingPromptLocale(record.client?.locale)) {
+    case 'traditionalChinese':
+      return [
+        'Hermes Hub Gateway 配對',
+        '',
+        `1. 先確認 \`hermes-hub-gateway\` 命令可用；若已可用，不要重裝或比較版本。若命令不存在，為 \`${npmCommand}\` 請求 Hermes 原生授權並等待使用者批准。不要使用 \`npx\`。`,
+        '2. 命令原本可用或安裝完成後，只執行一次以下配對命令；CLI 會自行使用健康的既有 Gateway，只有缺少或不相容時才修復 Plugin：',
+        `   ${pairCommand}`,
+        `3. 若安裝授權尚未批准或被拒絕，回傳 \`NEEDS_APPROVAL: ${npmCommand}\` 並停止；這不是安裝失敗，也不要執行配對。成功時只回傳 CLI 輸出的 8 位配對碼；若有 \`NEXT:\`，原樣附在配對碼後。實際執行過的命令失敗時回傳 \`FAILED step ...\`，不要自行重試。`,
+        '',
+        '版本或 manifest SHA 不阻擋配對；相容性只由共同 protocol 與 capabilities 決定。不要揭露 enrollment ticket、Gateway credential、API key 或本機秘密。',
+      ].join('\n')
+    case 'simplifiedChinese':
+      return [
+        'Hermes Hub Gateway 配对',
+        '',
+        `1. 先确认 \`hermes-hub-gateway\` 命令可用；如果已可用，不要重装或比较版本。如果命令不存在，为 \`${npmCommand}\` 请求 Hermes 原生授权并等待用户批准。不要使用 \`npx\`。`,
+        '2. 命令原本可用或安装完成后，只执行一次以下配对命令；CLI 会自行使用健康的现有 Gateway，只有缺失或不兼容时才修复 Plugin：',
+        `   ${pairCommand}`,
+        `3. 如果安装授权尚未批准或被拒绝，返回 \`NEEDS_APPROVAL: ${npmCommand}\` 并停止；这不是安装失败，也不要执行配对。成功时只返回 CLI 输出的 8 位配对码；如果有 \`NEXT:\`，原样附在配对码后。实际执行过的命令失败时返回 \`FAILED step ...\`，不要自行重试。`,
+        '',
+        '版本或 manifest SHA 不阻止配对；兼容性只由共同 protocol 与 capabilities 决定。不要泄露 enrollment ticket、Gateway credential、API key 或本机秘密。',
+      ].join('\n')
+    case 'english':
+      return [
+        'Hermes Hub Gateway pairing',
+        '',
+        `1. First check whether \`hermes-hub-gateway\` is available. If it is, do not reinstall it or compare versions. If it is missing, request native Hermes approval for \`${npmCommand}\` and wait for the user. Do not use \`npx\`.`,
+        '2. After the command is already available or installation completes, run the following pairing command exactly once. The CLI reuses a healthy Gateway and repairs the Plugin only when it is missing or incompatible:',
+        `   ${pairCommand}`,
+        `3. If installation approval is pending or denied, return \`NEEDS_APPROVAL: ${npmCommand}\` and stop; this is not an installation failure, and do not run pairing. On success, return only the CLI's 8-digit code and append any \`NEXT:\` line unchanged. If a command actually ran and failed, return \`FAILED step ...\` and do not retry.`,
+        '',
+        'Version or manifest-SHA differences do not block pairing; compatibility comes only from a shared protocol and capabilities. Never reveal the enrollment ticket, Gateway credential, API key, or local secrets.',
+      ].join('\n')
+  }
 }
 
 export class InMemoryPairingStore {

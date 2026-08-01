@@ -2270,6 +2270,24 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
     return true
   }
 
+  if (pathname === '/router/hermes-hub-gateways/self' && request.method === 'GET') {
+    const gatewayId = headerValue(request, 'x-hermes-hub-gateway-id')
+    const token = bearerToken(request.headers.authorization) || ''
+    const record = pairingStore.verifyGateway(gatewayId, token)
+    const gateway = gatewayRegistry.get(gatewayId)
+    const matchingGateway = gateway?.hermesAgentId === record.hermesAgentId ? gateway : undefined
+    const credentialState = record.gatewayCredentialState || (record.claimedAt ? 'active' : 'provisional')
+    sendJson(response, 200, {
+      hermesAgentId: record.hermesAgentId,
+      gatewayId: record.gatewayId,
+      gatewayCredentialState: credentialState,
+      online: Boolean(matchingGateway?.online),
+      connectedAt: matchingGateway?.connectedAt,
+      protocols: matchingGateway?.protocols || [],
+    })
+    return true
+  }
+
   const pairingGatewayStatusMatch = pathname.match(/^\/router\/pairing\/([^/]+)\/gateway-status$/)
   if (pairingGatewayStatusMatch && request.method === 'GET') {
     const requestId = decodeURIComponent(pairingGatewayStatusMatch[1])

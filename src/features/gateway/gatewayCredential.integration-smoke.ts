@@ -319,6 +319,25 @@ try {
   })
   assert.equal(firstHeartbeat.gateway.online, true)
   assert.equal((await fetchJson<{ hermesAgentsOnline: number }>(`${baseUrl}/router/health`)).hermesAgentsOnline, 1)
+  const selfStatus = await fetchJson<{
+    hermesAgentId: string
+    gatewayId: string
+    gatewayCredentialState: string
+    online: boolean
+    connectedAt: number
+    protocols: string[]
+  }>(`${baseUrl}/router/hermes-hub-gateways/self`, {
+    headers: {
+      authorization: `Bearer ${originalGatewayToken}`,
+      'x-hermes-hub-gateway-id': originalGatewayId,
+    },
+  })
+  assert.equal(selfStatus.hermesAgentId, hermesAgentId)
+  assert.equal(selfStatus.gatewayId, originalGatewayId)
+  assert.equal(selfStatus.gatewayCredentialState, 'active')
+  assert.equal(selfStatus.online, true)
+  assert.ok(selfStatus.connectedAt > 0)
+  assert.deepEqual(selfStatus.protocols, ['hermes-hub-gateway-rpc/v2'])
 
   const rotationRequest = await fetchJson<{ requestId: string }>(`${baseUrl}/router/pairing/request`, {
     method: 'POST',
@@ -398,6 +417,7 @@ try {
       'first Gateway stays provisional until Client claim',
       'Router health counts only active routable Agents',
       'Router health advertises GitHub skills and npm Gateway package metadata only',
+      'active Gateway can read its own exact authenticated connection status',
       'existing Bridge traffic stays on the active route during rotation',
       'claim promotes the candidate and closes the old WSS',
       'claim retries return the same bridge credential and repeat runtime reconciliation safely',
