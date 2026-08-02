@@ -178,6 +178,44 @@ await dispatcher.dispatch({
 })
 assert.equal(provider.intents.length, 2)
 
+await dispatcher.dispatch({
+  hermesAgentId: 'agent_a',
+  eventId: 'event_clarify_alias',
+  sessionId: 'session_1',
+  event: 'clarify.request',
+  data: { question: 'must not be copied' },
+})
+await dispatcher.dispatch({
+  hermesAgentId: 'agent_a',
+  eventId: 'event_approval_alias',
+  sessionId: 'session_1',
+  event: 'approval.request',
+  data: { command: 'must not be copied' },
+})
+assert.equal(provider.intents.length, 4)
+assert.equal(provider.intents[2]?.category, 'prompt_request')
+assert.equal(provider.intents[3]?.category, 'prompt_request')
+assert.equal(JSON.stringify(provider.intents).includes('must not be copied'), false)
+
+await dispatcher.dispatch({
+  hermesAgentId: 'agent_a',
+  eventId: 'event_failed_complete',
+  sessionId: 'session_1',
+  event: 'message.complete',
+  data: { status: 'error', error: 'must not be copied' },
+})
+assert.equal(provider.intents.length, 5)
+assert.equal(provider.intents[4]?.category, 'error')
+
+await dispatcher.dispatch({
+  hermesAgentId: 'agent_a',
+  eventId: 'event_native_failure_boundary',
+  sessionId: 'session_1',
+  event: 'processing.completed',
+  data: { outcome: 'failure' },
+})
+assert.equal(provider.intents.length, 5)
+
 provider.invalid = true
 await dispatcher.dispatch({
   hermesAgentId: 'agent_a',

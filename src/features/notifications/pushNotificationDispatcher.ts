@@ -83,13 +83,33 @@ function categoryFor(
   event: string,
   data: Record<string, unknown>,
 ): PushNotificationCategory | null {
-  if (event === 'prompt.requested') return 'prompt_request'
+  if (
+    event === 'prompt.requested' ||
+    event === 'clarify.request' ||
+    event === 'approval.request'
+  ) return 'prompt_request'
   if (event === 'error') return 'error'
-  if (event === 'message.complete' || event === 'processing.completed') {
+  if (event === 'message.complete') {
+    return eventReportsFailure(data) ? 'error' : 'assistant_reply'
+  }
+  if (event === 'processing.completed') {
+    if (eventReportsFailure(data)) return null
     return 'assistant_reply'
   }
   if (event === 'message.created' && data.role === 'assistant') {
     return 'assistant_reply'
   }
   return null
+}
+
+function eventReportsFailure(data: Record<string, unknown>): boolean {
+  const rawStatus = data.status ?? data.outcome
+  const status = typeof rawStatus === 'string' ? rawStatus.trim().toLowerCase() : ''
+  if (status === 'error' || status === 'failed' || status === 'failure') return true
+  const error = data.error
+  if (error === true) return true
+  if (typeof error === 'string' && error.trim().length > 0) return true
+  if (error && typeof error === 'object' && !Array.isArray(error)) return true
+  const failureReason = data.failure_reason ?? data.failureReason
+  return typeof failureReason === 'string' && failureReason.trim().length > 0
 }

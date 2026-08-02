@@ -154,6 +154,22 @@ assert.equal(events[4]?.event, 'review.summary')
 assert.equal(socketA.readyState, 1)
 
 socketA.receive({
+  type: 'session_event',
+  eventId: 'evt_session_info_aaaaaaa',
+  gatewayId: 'gw_native_a',
+  hermesAgentId: 'agent_native_a',
+  laneId: 'lane_aaaaaaaa',
+  sessionId: 'session_native_a',
+  submissionId: 'sub_aaaaaaaa',
+  event: 'session.info',
+  data: { running: true, cwd: '/private/host/path' },
+  sentAt: Date.now(),
+})
+assert.equal(events.length, 6)
+assert.equal(events[5]?.event, 'session.info')
+assert.equal(socketA.readyState, 1)
+
+socketA.receive({
   type: 'session_submit_ack',
   id: sent.id,
   requestType: 'session_submit',
@@ -216,6 +232,7 @@ console.log(JSON.stringify({
     'typed native message deltas preserve the Gateway connection',
     'interim assistant boundaries preserve the Gateway connection',
     'transient assistant live input preserves the Gateway connection',
+    'Desktop session info reaches the typed Flutter consumer through the Router allowlist',
     'native acknowledgement returns the Hermes session id',
     'versioned runtime snapshots are requested separately, cached, and redacted by the Router',
     'Gateway disconnect produces an ambiguous result and no retry',

@@ -533,6 +533,7 @@ const nativeSessionEvents = new Set([
   'status.update',
   'usage.updated',
   'gateway.ready',
+  'session.info',
   'clarify.request',
   'clarify.requested',
   'approval.request',
