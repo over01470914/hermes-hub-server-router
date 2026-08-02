@@ -514,6 +514,7 @@ const nativeSessionEvents = new Set([
   'message.updated',
   'message.start',
   'message.delta',
+  'message.interim',
   'message.complete',
   'assistant.delta',
   'assistant.live_input',

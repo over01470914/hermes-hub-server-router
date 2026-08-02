@@ -128,12 +128,23 @@ assert.equal(JSON.stringify(provider.intents).includes('must not be copied'), fa
 
 await dispatcher.dispatch({
   hermesAgentId: 'agent_a',
+  eventId: 'event_complete',
+  sessionId: 'session_1',
+  event: 'message.complete',
+  data: { text: 'final body must not be copied' },
+})
+assert.equal(provider.intents.length, 2)
+assert.equal(provider.intents[1]?.category, 'assistant_reply')
+assert.equal(JSON.stringify(provider.intents).includes('final body must not be copied'), false)
+
+await dispatcher.dispatch({
+  hermesAgentId: 'agent_a',
   eventId: 'event_1',
   sessionId: 'session_1',
   event: 'message.created',
   data: { role: 'assistant' },
 })
-assert.equal(provider.intents.length, 1)
+assert.equal(provider.intents.length, 2)
 
 registry.upsert({
   hermesAgentId: 'agent_a',
@@ -156,7 +167,7 @@ await dispatcher.dispatch({
   event: 'message.created',
   data: { role: 'assistant' },
 })
-assert.equal(provider.intents.length, 1)
+assert.equal(provider.intents.length, 2)
 
 await dispatcher.dispatch({
   hermesAgentId: 'agent_a',
@@ -165,7 +176,7 @@ await dispatcher.dispatch({
   event: 'message.delta',
   data: { text: 'ignored' },
 })
-assert.equal(provider.intents.length, 1)
+assert.equal(provider.intents.length, 2)
 
 provider.invalid = true
 await dispatcher.dispatch({

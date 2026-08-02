@@ -85,6 +85,9 @@ function categoryFor(
 ): PushNotificationCategory | null {
   if (event === 'prompt.requested') return 'prompt_request'
   if (event === 'error') return 'error'
+  if (event === 'message.complete' || event === 'processing.completed') {
+    return 'assistant_reply'
+  }
   if (event === 'message.created' && data.role === 'assistant') {
     return 'assistant_reply'
   }

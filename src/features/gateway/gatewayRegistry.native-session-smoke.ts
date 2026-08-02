@@ -107,6 +107,22 @@ assert.equal(socketA.readyState, 1)
 
 socketA.receive({
   type: 'session_event',
+  eventId: 'evt_interim_aaaaaaaa',
+  gatewayId: 'gw_native_a',
+  hermesAgentId: 'agent_native_a',
+  laneId: 'lane_aaaaaaaa',
+  sessionId: 'session_native_a',
+  submissionId: 'sub_aaaaaaaa',
+  event: 'message.interim',
+  data: { text: 'typed live content', already_streamed: true },
+  sentAt: Date.now(),
+})
+assert.equal(events.length, 3)
+assert.equal(events[2]?.event, 'message.interim')
+assert.equal(socketA.readyState, 1)
+
+socketA.receive({
+  type: 'session_event',
   eventId: 'evt_live_input_aaaaaaaa',
   gatewayId: 'gw_native_a',
   hermesAgentId: 'agent_native_a',
@@ -117,8 +133,8 @@ socketA.receive({
   data: { messageId: 'live-input:sub_aaaaaaaa', text: 'current agent output' },
   sentAt: Date.now(),
 })
-assert.equal(events.length, 3)
-assert.equal(events[2]?.event, 'assistant.live_input')
+assert.equal(events.length, 4)
+assert.equal(events[3]?.event, 'assistant.live_input')
 assert.equal(socketA.readyState, 1)
 
 socketA.receive({
@@ -133,8 +149,8 @@ socketA.receive({
   data: { messageId: 'msg_review_aaaaaaaa', text: 'Self-improvement review: Updated memory.' },
   sentAt: Date.now(),
 })
-assert.equal(events.length, 4)
-assert.equal(events[3]?.event, 'review.summary')
+assert.equal(events.length, 5)
+assert.equal(events[4]?.event, 'review.summary')
 assert.equal(socketA.readyState, 1)
 
 socketA.receive({
@@ -198,6 +214,7 @@ console.log(JSON.stringify({
     'native submission is routed only to the selected Agent Gateway',
     'unsolicited native session events are accepted through the lane validator',
     'typed native message deltas preserve the Gateway connection',
+    'interim assistant boundaries preserve the Gateway connection',
     'transient assistant live input preserves the Gateway connection',
     'native acknowledgement returns the Hermes session id',
     'versioned runtime snapshots are requested separately, cached, and redacted by the Router',
