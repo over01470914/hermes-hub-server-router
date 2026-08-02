@@ -722,7 +722,6 @@ function usage() {
     '  node apps/hermes-hub-server-router/router-local-env.mjs rotate-approval-token [--router-env <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs clear-approval-token [--router-env <path>]',
     '  node apps/hermes-hub-server-router/router-local-env.mjs set-debug-pairing --code <8-digits> [--router-env <path>]',
-    '  pnpm router:pair-gateway -- --installer <verified-installer-path> --request-id <pair-id> --enrollment-ticket <ticket> [--router <loopback-url>] [--source-base <Router package mirror>]',
     '',
     'The token is generated once, never printed, and rotated or cleared only by explicit local commands.',
   ].join('\n')

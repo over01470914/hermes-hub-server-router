@@ -58,8 +58,6 @@ pnpm router:dev
 pnpm router:stop
 ```
 
-Compatibility alias: `pnpm server-router:dev`.
-
 `HERMES_HUB_AGENT_APPROVAL_TOKEN` is required in development and production.
 The local initializer creates it in the ignored private environment. Rotate or
 clear it only through the provided Router scripts, restart Router afterward,

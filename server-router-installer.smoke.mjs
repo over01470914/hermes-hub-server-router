@@ -299,6 +299,9 @@ try {
 
   stage('valid metadata health')
   await access(deployedMetadataPath)
+  const installedPackage = JSON.parse(await readFile(join(workdir, 'package.json'), 'utf8'))
+  assert.equal(installedPackage.scripts?.['router:dev'], 'tsx src/bridgeServer.ts')
+  assert.equal(installedPackage.scripts?.['server-router:dev'], undefined)
   assert.ok(source.requests.has('/gateway/gateway-release-metadata.json'))
   assert.ok(!source.requests.has('/router/gateway-release-metadata.json'))
   const installedEnvironment = environmentFrom(envFile)

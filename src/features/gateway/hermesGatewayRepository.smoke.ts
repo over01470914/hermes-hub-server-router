@@ -22,6 +22,7 @@ function state(capabilities: string[] = []): GatewayState {
     connectedAt: 1,
     lastSeenAt: 1,
     online: true,
+    agentOnline: true,
     inFlightRpc: 0,
     runtime: 'hermes-hub-gateway',
     mode: 'native-session',
@@ -179,6 +180,21 @@ assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/kanban/priva
       path: '/api/sessions/session_1',
     }),
     /required capability: sessions/,
+  )
+  assert.equal(gateway.requestCalls, 0)
+}
+
+{
+  const transportOnly = {
+    ...state(['health']),
+    agentOnline: false,
+    routable: false,
+  }
+  const gateway = new FakeRegistry(transportOnly)
+  const connections = repository(gateway)
+  await assert.rejects(
+    connections.request(hermesAgentId, { method: 'GET', path: '/health' }),
+    /Hermes Agent runtime is unavailable/,
   )
   assert.equal(gateway.requestCalls, 0)
 }

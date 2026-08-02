@@ -110,7 +110,7 @@ export function requiredGatewayCapability(payload: GatewayRpcRequest): string | 
 /**
  * The Router's only host-transport seam. It never falls back to a second
  * host transport or local Agent URL: an operation is either advertised by the
- * lifecycle-owned Gateway, or it is unavailable.
+ * Sidecar/Plugin Gateway path, or it is unavailable.
  */
 export class HermesGatewayRepository {
   constructor(private readonly gateways: GatewayRegistry) {}
@@ -119,6 +119,9 @@ export class HermesGatewayRepository {
     const gateway = this.gateways.getByAgentId(hermesAgentId)
     if (!gateway?.online) {
       throw gatewayUnavailable('Hermes Hub Gateway offline', 503, 'gateway_offline')
+    }
+    if (!gateway.agentOnline || !gateway.routable) {
+      throw gatewayUnavailable('Hermes Agent runtime is unavailable', 503, 'agent_unavailable')
     }
     return gateway
   }

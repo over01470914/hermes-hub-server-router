@@ -26,6 +26,7 @@ export interface GatewayState {
   connectedAt: number
   lastSeenAt: number
   online: boolean
+  agentOnline?: boolean
   inFlightRpc: number
   runtime: string
   mode: string
@@ -110,6 +111,8 @@ export interface GatewayHeartbeatResult {
   gatewayConnectionId?: string
   latencyMs?: number
   online: boolean
+  agentOnline?: boolean
+  routable?: boolean
   lastSeenAt?: number
   liveness?: GatewayLivenessState['kind']
   consecutiveMisses?: 1
@@ -231,6 +234,7 @@ interface PendingRuntimeSnapshot {
 }
 
 interface TrackedGateway extends GatewayState {
+  agentOnline: boolean
   requestId: string
   user: string
   deviceName: string
@@ -687,6 +691,7 @@ export class GatewayRegistry {
       // A bearer-authenticated socket is not routable until its hello frame
       // proves the Agent/Gateway identities and negotiates our protocol.
       online: false,
+      agentOnline: false,
       inFlightRpc: 0,
       runtime: 'unknown',
       mode: 'unknown',
@@ -713,6 +718,7 @@ export class GatewayRegistry {
       if (state.helloTimeout) clearTimeout(state.helloTimeout)
       state.helloTimeout = undefined
       state.online = false
+      state.agentOnline = false
       state.routable = false
       state.lastSeenAt = nowSeconds()
       state.socket = undefined
@@ -887,8 +893,8 @@ export class GatewayRegistry {
         code: 'gateway_activation_retry',
       })
     }
-    if (!candidate.online || candidate.socket?.readyState !== 1) {
-      throw Object.assign(new Error('Gateway credential candidate is not online'), {
+    if (!candidate.online || !candidate.agentOnline || candidate.socket?.readyState !== 1) {
+      throw Object.assign(new Error('Gateway credential candidate Agent bridge is not online'), {
         code: 'gateway_activation_retry',
       })
     }
@@ -908,7 +914,9 @@ export class GatewayRegistry {
         candidate.hermesAgentId === reservation.hermesAgentId &&
         candidate.gatewayConnectionId === reservation.gatewayConnectionId
       )
-      const candidateOpen = Boolean(exactConnection && candidate?.online && candidate.socket?.readyState === 1)
+      const candidateOpen = Boolean(
+        exactConnection && candidate?.online && candidate.agentOnline && candidate.socket?.readyState === 1,
+      )
       const reason: GatewayActivationSyncResult['reason'] = !candidate
         ? 'candidate_missing'
         : !exactConnection
@@ -919,7 +927,7 @@ export class GatewayRegistry {
 
       if (candidateOpen && candidate) {
         candidate.gatewayCredentialState = 'active'
-        candidate.routable = true
+        candidate.routable = candidate.agentOnline
       }
 
       // Persistent credential state is authoritative after claim. Reconcile
@@ -938,6 +946,7 @@ export class GatewayRegistry {
         state.gatewayCredentialState = state.gatewayId === reservation.gatewayId ? 'active' : 'revoked'
         state.routable = false
         state.online = false
+        state.agentOnline = false
         logRouter('warn', state.gatewayId === reservation.gatewayId
           ? 'Gateway activation reservation changed before runtime commit'
           : 'Gateway credential connection revoked after rotation', {
@@ -1013,6 +1022,7 @@ export class GatewayRegistry {
         quarantinedGatewayIds.add(state.gatewayId)
         state.routable = false
         state.online = false
+        state.agentOnline = false
         try {
           if (state.socket && state.socket.readyState <= 1) state.socket.close(4410, 'gateway activation retry required')
         } catch {
@@ -1052,19 +1062,21 @@ export class GatewayRegistry {
       state.socket.readyState === 1,
     )
     const online = socketOpen && liveness.kind !== 'offline'
-    const error = liveness.kind === 'suspect'
-      ? 'Gateway heartbeat suspect'
-      : liveness.kind === 'offline'
-        ? liveness.reason
-        : online
-          ? undefined
-          : 'Gateway offline'
+    const agentOnline = Boolean(online && state?.agentOnline)
+    const routable = Boolean(agentOnline && state?.routable)
+    let error: string | undefined
+    if (liveness.kind === 'suspect') error = 'Gateway heartbeat suspect'
+    else if (liveness.kind === 'offline') error = liveness.reason
+    else if (online && !agentOnline) error = 'Hermes Agent runtime is unavailable'
+    else if (!online) error = 'Gateway offline'
     return {
-      ok: online && liveness.kind === 'healthy',
+      ok: routable && liveness.kind === 'healthy',
       gatewayId: state?.gatewayId,
       hermesAgentId: resolvedAgentId,
       gatewayConnectionId: state?.gatewayConnectionId,
       online,
+      agentOnline,
+      routable,
       lastSeenAt: state?.lastSeenAt,
       liveness: liveness.kind,
       ...(liveness.kind === 'healthy'
@@ -1096,6 +1108,9 @@ export class GatewayRegistry {
   async requestByAgentId(hermesAgentId: string, payload: GatewayRpcRequest, timeoutMs = 10_000): Promise<GatewayRpcResponse> {
     const state = this.gatewayForAgent(hermesAgentId)
     if (!state?.socket || !state.online || state.socket.readyState !== 1) throw new Error('Gateway offline')
+    if (!state.agentOnline || !state.routable) {
+      throw Object.assign(new Error('Hermes Agent runtime is unavailable'), { code: 'agent_unavailable' })
+    }
     const id = `rpc_${randomUUID()}`
     const startedAt = Date.now()
     const message = JSON.stringify({ type: 'rpc_request', id, ...payload, timeoutMs })
@@ -1238,6 +1253,9 @@ export class GatewayRegistry {
     const state = this.gatewayForAgent(hermesAgentId)
     if (!state?.socket || !state.online || state.socket.readyState !== 1) {
       throw Object.assign(new Error('Gateway offline'), { code: 'gateway_offline' })
+    }
+    if (!state.agentOnline || !state.routable) {
+      throw Object.assign(new Error('Hermes Agent runtime is unavailable'), { code: 'agent_unavailable' })
     }
     const requiredCapability = requestType === 'session_submit'
       ? 'session.message'
@@ -1456,6 +1474,60 @@ export class GatewayRegistry {
       }
       return
     }
+    if (parsed.type === 'agent_status') {
+      const sidecarTransport = state.runtime === 'hermes-hub-gateway-sidecar' && state.mode === 'sidecar'
+      const identityMatches = parsed.gatewayId === state.gatewayId && parsed.hermesAgentId === state.hermesAgentId
+      if (!state.online || !sidecarTransport || !identityMatches || typeof parsed.online !== 'boolean') {
+        logRouter('warn', 'Gateway Sidecar Agent status rejected', {
+          gatewayId: state.gatewayId,
+          hermesAgentId: state.hermesAgentId,
+          gatewayConnectionId: state.gatewayConnectionId,
+        })
+        state.socket?.close(4400, 'invalid sidecar agent status')
+        return
+      }
+      const capabilities = Array.isArray(parsed.capabilities)
+        ? parsed.capabilities
+          .filter((item): item is string => typeof item === 'string' && item.length > 0)
+          .map(item => item.slice(0, 120))
+          .slice(0, 64)
+        : []
+      const protocols = Array.isArray(parsed.protocols)
+        ? parsed.protocols.filter((item): item is string => typeof item === 'string').slice(0, 8)
+        : []
+      if (
+        parsed.online && (
+          parsed.runtime !== 'hermes-hub-gateway' ||
+          parsed.mode !== 'native-session' ||
+          !protocols.includes(this.options.protocol) ||
+          !capabilities.includes('session.message') ||
+          !capabilities.includes('session.prompt-response')
+        )
+      ) {
+        logRouter('warn', 'Gateway Sidecar Agent contract rejected', {
+          gatewayId: state.gatewayId,
+          hermesAgentId: state.hermesAgentId,
+          gatewayConnectionId: state.gatewayConnectionId,
+          capabilityCount: capabilities.length,
+        })
+        state.socket?.close(4406, 'native session agent bridge required')
+        return
+      }
+      state.agentOnline = parsed.online
+      state.capabilities = parsed.online ? capabilities : []
+      state.routable = parsed.online && state.gatewayCredentialState === 'active'
+      state.lastSeenAt = nowSeconds()
+      logRouter(parsed.online ? 'info' : 'warn', parsed.online
+        ? 'Gateway Sidecar Agent bridge online'
+        : 'Gateway Sidecar Agent bridge offline', {
+        gatewayId: state.gatewayId,
+        hermesAgentId: state.hermesAgentId,
+        gatewayConnectionId: state.gatewayConnectionId,
+        routable: state.routable,
+        capabilityCount: state.capabilities.length,
+      })
+      return
+    }
     if (parsed.type === 'rpc_cancel_ack' && typeof parsed.id === 'string') {
       const outcome = (
         parsed.outcome === 'cancelled' ||
@@ -1550,6 +1622,7 @@ export class GatewayRegistry {
         state.pendingHeartbeats.delete(parsed.id)
         clearTimeout(pending.timeout)
         state.online = false
+        state.agentOnline = false
         state.routable = false
         state.lastSeenAt = nowSeconds()
         logRouter('warn', 'Gateway heartbeat identity rejected', {
@@ -1609,17 +1682,28 @@ export class GatewayRegistry {
       state.runtime = typeof parsed.runtime === 'string' && parsed.runtime.trim() ? parsed.runtime.trim().slice(0, 80) : 'unknown'
       state.mode = typeof parsed.mode === 'string' && parsed.mode.trim() ? parsed.mode.trim().slice(0, 80) : 'unknown'
       state.protocols = protocols
-      if (Array.isArray(parsed.capabilities)) {
-        state.capabilities = parsed.capabilities
+      const capabilities = Array.isArray(parsed.capabilities)
+        ? parsed.capabilities
           .filter((item): item is string => typeof item === 'string' && item.length > 0)
           .map(item => item.slice(0, 120))
           .slice(0, 64)
+        : []
+      state.capabilities = capabilities
+      const sidecarTransport = state.runtime === 'hermes-hub-gateway-sidecar' && state.mode === 'sidecar'
+      if (sidecarTransport && (capabilities.length > 0 || parsed.agentOnline === true)) {
+        logRouter('warn', 'Gateway Sidecar hello contract rejected', {
+          gatewayId: state.gatewayId,
+          hermesAgentId: state.hermesAgentId,
+          gatewayConnectionId: state.gatewayConnectionId,
+        })
+        state.socket?.close(4406, 'sidecar transport hello must start Agent-offline')
+        return
       }
-      if (
+      if (!sidecarTransport && (
         state.mode !== 'native-session' ||
         !state.capabilities?.includes('session.message') ||
         !state.capabilities.includes('session.prompt-response')
-      ) {
+      )) {
         logRouter('warn', 'Gateway native session contract rejected', {
           gatewayId: state.gatewayId,
           hermesAgentId: state.hermesAgentId,
@@ -1633,7 +1717,8 @@ export class GatewayRegistry {
       if (state.helloTimeout) clearTimeout(state.helloTimeout)
       state.helloTimeout = undefined
       state.online = true
-      state.routable = state.gatewayCredentialState === 'active'
+      state.agentOnline = !sidecarTransport
+      state.routable = state.gatewayCredentialState === 'active' && state.agentOnline
       if (state.gatewayCredentialState === 'active') {
         this.liveness.recordSocketReady(
           state.hermesAgentId,
@@ -1651,6 +1736,7 @@ export class GatewayRegistry {
         mode: state.mode,
         protocols: state.protocols,
         capabilities: state.capabilities,
+        agentOnline: state.agentOnline,
       })
       state.socket?.send(JSON.stringify({
         type: 'hello_ack',
@@ -1661,6 +1747,7 @@ export class GatewayRegistry {
         protocols: this.options.protocols,
         gatewayCredentialState: state.gatewayCredentialState,
         routable: state.routable,
+        agentOnline: state.agentOnline,
       }))
       return
     }
@@ -1698,6 +1785,7 @@ export class GatewayRegistry {
           return
         }
         current.online = false
+        current.agentOnline = false
         current.routable = false
         current.lastSeenAt = nowSeconds()
         logRouter('warn', 'Gateway marked offline after liveness misses', {
@@ -1808,6 +1896,7 @@ export class GatewayRegistry {
       connectedAt: state.connectedAt,
       lastSeenAt: state.lastSeenAt,
       online: state.online,
+      agentOnline: state.agentOnline,
       inFlightRpc: state.inFlightRpc,
       runtime: state.runtime,
       mode: state.mode,

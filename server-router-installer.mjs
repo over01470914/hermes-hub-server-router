@@ -378,7 +378,6 @@ async function downloadRuntime(baseUrl, workdir, dryRun) {
     type: 'module',
     scripts: {
       'router:dev': 'tsx src/bridgeServer.ts',
-      'server-router:dev': 'tsx src/bridgeServer.ts',
       'server:check': 'tsc -p tsconfig.server.json --pretty false',
     },
     dependencies: {
@@ -675,7 +674,7 @@ let child
 let stopping = false
 function start() {
   const env = loadEnv(envFile)
-  child = spawn(npm, [...npmPrefixArgs, 'run', 'server-router:dev'], { cwd: workdir, env, stdio: 'inherit' })
+  child = spawn(npm, [...npmPrefixArgs, 'run', 'router:dev'], { cwd: workdir, env, stdio: 'inherit' })
   child.on('exit', (code, signal) => {
     if (stopping) process.exit(code || 0)
     console.error('[server-router-watchdog] child exited', { code, signal })
