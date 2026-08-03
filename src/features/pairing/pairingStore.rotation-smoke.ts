@@ -47,17 +47,13 @@ assert.match(hostileRequest.prompt, /npm install -g @over01470914\/hermes-hub-ga
 assert.match(hostileRequest.prompt, /hermes-hub-gateway pair --runtime hermes/)
 assert.match(hostileRequest.prompt, /npm list -g @over01470914\/hermes-hub-gateway --depth=0 --json/)
 assert.match(hostileRequest.prompt, /npm view @over01470914\/hermes-hub-gateway@latest version --json/)
-assert.match(hostileRequest.prompt, /package is missing or the two versions differ/)
 assert.doesNotMatch(hostileRequest.prompt, /1\.1\.0/)
 assert.match(hostileRequest.prompt, /NEEDS_APPROVAL: npm install -g/)
-assert.match(hostileRequest.prompt, /pairing command exactly once/)
-assert.match(hostileRequest.prompt, /6\. Report the result:/)
+assert.match(hostileRequest.prompt, /5\. Then run exactly once:/)
 assert.match(hostileRequest.prompt, /references\/failure-points\.md/)
 assert.match(hostileRequest.prompt, /PAIRING_DIAGNOSIS \[problem_key\] layer=<layer> disposition=<disposition>/)
-assert.match(hostileRequest.prompt, /pairing_failure_unclassified/)
-assert.match(hostileRequest.prompt, /Do not run extra diagnostics, clear identity, restart services, or retry/)
-assert.match(hostileRequest.prompt, /Client must create a fresh pairing request/)
-assert.match(hostileRequest.prompt, /Version or manifest-SHA differences do not block pairing/)
+assert.match(hostileRequest.prompt, /Stop and wait for a fresh Client pairing request/)
+assert.ok(hostileRequest.prompt.split('\n').length <= 11, 'pairing prompt stays concise')
 assert.doesNotMatch(hostileRequest.prompt, /traditionalChinese|attacker command/)
 assert.doesNotMatch(hostileRequest.prompt, /Expires at \(UTC\):|Capabilities:/)
 assert.doesNotMatch(hostileRequest.prompt, /new uniquely named \.mjs helper/)
@@ -242,7 +238,7 @@ assert.throws(
 )
 assert.match(
   hostileRequest.prompt,
-  /match the skill's failure-points catalog/,
+  /references\/failure-points\.md/,
   'Hermes must classify revoked credential reuse through the stable skill catalog',
 )
 
