@@ -121,6 +121,8 @@ assert.match(pathRequest.prompt, /PAIRING_DIAGNOSIS \[problem_key\] layer=<layer
 assert.match(pathRequest.prompt, /pairing_failure_unclassified/)
 assert.match(pathRequest.prompt, /Do not run extra diagnostics, clear identity, restart services, or retry/)
 assert.match(pathRequest.prompt, /Client must create a fresh pairing request/)
+assert.match(pathRequest.prompt, /version mismatch or an obsolete CLI's explicit `NEXT: npm install -g \.\.\.@latest` takes precedence/)
+assert.match(pathRequest.prompt, /current stream URL is optional and has a loopback default/)
 assert.match(pathRequest.prompt, /reuses a healthy Gateway/)
 assert.match(pathRequest.prompt, /Hermes Desktop may rewrite the Router URL in pasted text/)
 assert.match(pathRequest.prompt, /pass only the inner URL as the single plain-text argv value/)
