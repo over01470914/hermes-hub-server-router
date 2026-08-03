@@ -1,7 +1,9 @@
 import { spawnSync } from 'node:child_process'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { WebSocketServer } from 'ws'
 import { BoundedSseWriter } from './core/http/boundedSseWriter.js'
@@ -43,6 +45,7 @@ import {
   type PushPlatform,
 } from './features/notifications/pushDeviceRegistry.js'
 import { JPushPushProvider } from './features/notifications/pushProvider.js'
+
 import { PushNotificationDispatcher } from './features/notifications/pushNotificationDispatcher.js'
 import { PendingRealtimeFrameBuffer } from './features/realtime/pendingRealtimeFrames.js'
 import { SessionMetadataStore } from './features/sessions/sessionMetadataStore.js'
@@ -60,6 +63,21 @@ import {
   cronBridgePermission,
   type CronBridgeLogLevel
 } from './features/cron/cronBridge.js'
+
+const routerVersion = (() => {
+  try {
+    const packagePath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../package.json',
+    )
+    const packageJson = JSON.parse(readFileSync(packagePath, 'utf8')) as {
+      version?: unknown
+    }
+    return typeof packageJson.version === 'string' ? packageJson.version : undefined
+  } catch {
+    return undefined
+  }
+})()
 
 const config = readBridgeConfig()
 const routerInstanceId = randomUUID()
@@ -1723,6 +1741,22 @@ async function handleNativeSessionMessage(
     ? input.conversationId.trim()
     : undefined
   const text = typeof input.text === 'string' ? input.text : ''
+  if (
+    (input.model !== undefined && (typeof input.model !== 'string' || !input.model.trim())) ||
+    (input.provider !== undefined && (typeof input.provider !== 'string' || !input.provider.trim()))
+  ) {
+    throw Object.assign(new Error('model selection is invalid'), { code: 'validation_error', statusCode: 400 })
+  }
+  const model = typeof input.model === 'string' && input.model.trim()
+    ? input.model.trim()
+    : undefined
+  const provider = typeof input.provider === 'string' && input.provider.trim()
+    ? input.provider.trim()
+    : undefined
+  const reasoningEffort = typeof input.reasoningEffort === 'string' && input.reasoningEffort.trim()
+    ? input.reasoningEffort.trim().toLowerCase()
+    : undefined
+  const fast = typeof input.fast === 'boolean' ? input.fast : undefined
   const attachmentIds = Array.isArray(input.attachmentIds)
     ? input.attachmentIds
     : []
@@ -1740,6 +1774,20 @@ async function handleNativeSessionMessage(
   }
   if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) {
     throw Object.assign(new Error('Session message is too large'), { code: 'body_too_large', statusCode: 413 })
+  }
+  if (
+    (model && (Buffer.byteLength(model, 'utf8') > 512 || /[\u0000-\u001f\u007f]/.test(model))) ||
+    (provider && (Buffer.byteLength(provider, 'utf8') > 256 || /[\u0000-\u001f\u007f]/.test(provider))) ||
+    (provider && !model)
+  ) {
+    throw Object.assign(new Error('model selection is invalid'), { code: 'validation_error', statusCode: 400 })
+  }
+  if (
+    (input.reasoningEffort !== undefined && (typeof input.reasoningEffort !== 'string' || !reasoningEffort)) ||
+    (reasoningEffort && !/^[a-z][a-z0-9_-]{0,31}$/.test(reasoningEffort)) ||
+    (input.fast !== undefined && typeof input.fast !== 'boolean')
+  ) {
+    throw Object.assign(new Error('session runtime controls are invalid'), { code: 'validation_error', statusCode: 400 })
   }
 
   const begun = nativeConversationStore.beginSubmission(
@@ -1779,6 +1827,10 @@ async function handleNativeSessionMessage(
         submissionId,
         text,
         deviceId: payload.deviceId,
+        ...(model ? { model } : {}),
+        ...(provider ? { provider } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(fast !== undefined ? { fast } : {}),
         attachmentIds,
       },
       10_000,
@@ -1786,9 +1838,20 @@ async function handleNativeSessionMessage(
     if (!acknowledgement.accepted || !acknowledgement.sessionId) {
       const code = acknowledgement.code || 'native_submission_rejected'
       nativeConversationStore.updateSubmission(payload.hermesAgentId, submissionId, 'failed', { errorCode: code })
+      const statusCode = code === 'submission_conflict' || code === 'session_busy'
+        ? 409
+        : code === 'model_selection_failed'
+          ? 400
+          : code === 'reasoning_selection_failed' || code === 'fast_mode_unsupported'
+            ? 400
+          : code === 'capability_unsupported'
+            ? 501
+            : code === 'model_selection_unavailable' || code === 'runtime_controls_unavailable' || code === 'native_runtime_unavailable'
+              ? 503
+              : 502
       throw Object.assign(new Error(acknowledgement.error || 'Gateway rejected native session submission'), {
         code,
-        statusCode: code === 'submission_conflict' ? 409 : 502,
+        statusCode,
       })
     }
     const accepted = nativeConversationStore.updateSubmission(
@@ -1987,6 +2050,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
     sendJson(response, 200, {
       ok: true,
       service: 'hermes-hub-router',
+      ...(routerVersion ? { routerVersion } : {}),
       routerUrl,
       topology: 'client-router-gateway-sidecar-plugin-agent',
       gateways: gateways.length,
@@ -2026,6 +2090,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
       }
     }
     const startedAt = Date.now()
+    const gatewayRelease = readGatewayPluginReleaseArtifact()
     const gateway = await hermesGateways.heartbeat(hermesAgentId, 3000).catch(error => ({
       ok: false,
       gatewayId: undefined,
@@ -2055,6 +2120,8 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
     sendJson(response, 200, {
       ok: true,
       service: 'hermes-hub-router',
+      ...(routerVersion ? { routerVersion } : {}),
+      ...(gatewayRelease ? { gatewayVersion: gatewayRelease.packageVersion } : {}),
       routerUrl,
       checkedAt: Math.floor(Date.now() / 1000),
       router: { ok: true, latencyMs: Date.now() - startedAt },

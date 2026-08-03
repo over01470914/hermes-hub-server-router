@@ -32,7 +32,15 @@ class FakeGatewaySocket extends EventEmitter {
       runtime: 'hermes-hub-gateway',
       mode: 'native-session',
       protocols: ['hermes-hub-gateway-rpc/v2'],
-      capabilities: ['health', 'sessions', 'session.message', 'session.prompt-response', 'runtime.status'],
+      capabilities: [
+        'health',
+        'sessions',
+        'session.message',
+        'session.model-selection',
+        'session.runtime-controls',
+        'session.prompt-response',
+        'runtime.status',
+      ],
     })
   }
 }
@@ -69,11 +77,19 @@ const submission = registry.submitSessionByAgentId('agent_native_a', {
   submissionId: 'sub_aaaaaaaa',
   deviceId: 'device_a',
   text: 'body visible only on the wire',
+  model: 'gpt-5.6-terra',
+  provider: 'openai-codex',
+  reasoningEffort: 'high',
+  fast: false,
 })
 const sent = socketA.sent.find(frame => frame.type === 'session_submit')
 assert.ok(sent)
 assert.equal(sent.hermesAgentId, undefined)
 assert.equal(sent.laneId, 'lane_aaaaaaaa')
+assert.equal(sent.model, 'gpt-5.6-terra')
+assert.equal(sent.provider, 'openai-codex')
+assert.equal(sent.reasoningEffort, 'high')
+assert.equal(sent.fast, false)
 
 socketA.receive({
   type: 'session_event',

@@ -97,12 +97,22 @@ assert.equal(
   'operator-configured Router base paths must be preserved'
 )
 assert.match(pathRequest.prompt, /npm install -g @over01470914\/hermes-hub-gateway@latest/)
+assert.match(pathRequest.prompt, /npm list -g @over01470914\/hermes-hub-gateway --depth=0 --json/)
+assert.match(pathRequest.prompt, /npm view @over01470914\/hermes-hub-gateway@latest version --json/)
 assert.match(pathRequest.prompt, /hermes-hub-gateway pair --runtime hermes --router "https:\/\/router\.example\.test\/router-prefix"/)
-assert.match(pathRequest.prompt, /First check whether `hermes-hub-gateway` is available/)
+assert.match(pathRequest.prompt, /package is missing or the two versions differ/)
+assert.match(pathRequest.prompt, /installed version exactly equals latest/)
+assert.match(pathRequest.prompt, /Do not hard-code a version/)
+assert.doesNotMatch(pathRequest.prompt, /1\.1\.0/)
 assert.match(pathRequest.prompt, /request native Hermes approval/)
 assert.match(pathRequest.prompt, /NEEDS_APPROVAL: npm install -g/)
 assert.match(pathRequest.prompt, /pairing command exactly once/)
 assert.match(pathRequest.prompt, /reuses a healthy Gateway/)
+assert.match(pathRequest.prompt, /Hermes Desktop may rewrite the Router URL in pasted text/)
+assert.match(pathRequest.prompt, /pass only the inner URL as the single plain-text argv value/)
+assert.match(pathRequest.prompt, /final shell command contains no `@url:` and no backticks/)
+assert.match(pathRequest.prompt, /Bash treats backticks as command substitution/)
+assert.doesNotMatch(pathRequest.prompt, /--router "@url:/)
 assert.match(pathRequest.prompt, /Version or manifest-SHA differences do not block pairing/)
 assert.doesNotMatch(pathRequest.prompt, /Expires at \(UTC\):|Capabilities:/)
 assert.doesNotMatch(pathRequest.prompt, /new uniquely named \.mjs helper/)
@@ -116,8 +126,13 @@ const traditionalPrompt = pathStore.create({
   client: { appName: 'Hermes Hub', locale: 'traditionalChinese' },
 }).prompt
 assert.match(traditionalPrompt, /請求 Hermes 原生授權並等待使用者批准/)
+assert.match(traditionalPrompt, /兩個版本不相同/)
+assert.match(traditionalPrompt, /不要把版本號寫死/)
 assert.match(traditionalPrompt, /NEEDS_APPROVAL: npm install -g/)
 assert.match(traditionalPrompt, /只執行一次以下配對命令/)
+assert.match(traditionalPrompt, /Hermes Desktop 貼上文字時可能把命令中的 Router URL 改寫/)
+assert.match(traditionalPrompt, /確認最終 Shell 命令不含 `@url:` 或任何反引號/)
+assert.match(traditionalPrompt, /Bash 會把反引號當成命令替換/)
 assert.match(traditionalPrompt, /成功時只回傳 CLI 輸出的 8 位配對碼/)
 assert.match(traditionalPrompt, /hermes-hub-gateway pair --runtime hermes/)
 
@@ -126,8 +141,13 @@ const simplifiedPrompt = pathStore.create({
   client: { appName: 'Hermes Hub', locale: 'zh-CN' },
 }).prompt
 assert.match(simplifiedPrompt, /请求 Hermes 原生授权并等待用户批准/)
+assert.match(simplifiedPrompt, /两个版本不同/)
+assert.match(simplifiedPrompt, /不要把版本号写死/)
 assert.match(simplifiedPrompt, /NEEDS_APPROVAL: npm install -g/)
 assert.match(simplifiedPrompt, /只执行一次以下配对命令/)
+assert.match(simplifiedPrompt, /Hermes Desktop 粘贴文本时可能把命令中的 Router URL 改写/)
+assert.match(simplifiedPrompt, /确认最终 Shell 命令不含 `@url:` 或任何反引号/)
+assert.match(simplifiedPrompt, /Bash 会把反引号当成命令替换/)
 assert.match(simplifiedPrompt, /成功时只返回 CLI 输出的 8 位配对码/)
 assert.match(simplifiedPrompt, /hermes-hub-gateway pair --runtime hermes/)
 

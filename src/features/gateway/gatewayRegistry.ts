@@ -58,6 +58,10 @@ export interface GatewaySessionSubmit {
   submissionId: string
   text: string
   deviceId: string
+  model?: string
+  provider?: string
+  reasoningEffort?: string
+  fast?: boolean
   attachmentIds?: string[]
 }
 
@@ -1216,6 +1220,10 @@ export class GatewayRegistry {
         submissionId: payload.submissionId,
         text: payload.text,
         deviceId: payload.deviceId,
+        ...(payload.model ? { model: payload.model } : {}),
+        ...(payload.provider ? { provider: payload.provider } : {}),
+        ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
+        ...(payload.fast !== undefined ? { fast: payload.fast } : {}),
         ...(payload.attachmentIds?.length ? { attachmentIds: payload.attachmentIds } : {}),
       },
       { submissionId: payload.submissionId },
@@ -1263,6 +1271,27 @@ export class GatewayRegistry {
     if (!state.capabilities?.includes(requiredCapability)) {
       throw Object.assign(new Error(`Gateway capability is unavailable: ${requiredCapability}`), {
         code: 'gateway_capability_unsupported',
+        statusCode: 501,
+      })
+    }
+    if (
+      requestType === 'session_submit' &&
+      typeof payload.model === 'string' &&
+      !state.capabilities?.includes('session.model-selection')
+    ) {
+      throw Object.assign(new Error('Gateway capability is unavailable: session.model-selection'), {
+        code: 'gateway_capability_unsupported',
+        statusCode: 501,
+      })
+    }
+    if (
+      requestType === 'session_submit' &&
+      (typeof payload.reasoningEffort === 'string' || typeof payload.fast === 'boolean') &&
+      !state.capabilities?.includes('session.runtime-controls')
+    ) {
+      throw Object.assign(new Error('Gateway capability is unavailable: session.runtime-controls'), {
+        code: 'gateway_capability_unsupported',
+        statusCode: 501,
       })
     }
     const id = `native_${randomUUID()}`
