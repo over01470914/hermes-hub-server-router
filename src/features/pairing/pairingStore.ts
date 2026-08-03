@@ -321,15 +321,18 @@ export function buildGatewayEnrollmentTicket(secret: string, record: PairingRequ
 
 export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicket = ''): string {
   const router = record.routerUrl.replace(/\/$/, '')
+  const pairCommand = `hermes-hub-gateway pair --runtime hermes --router "${router}" --request-id "${record.requestId}" --enrollment-ticket "${enrollmentTicket}"`
   return [
-    '請完成 Hermes Hub Gateway 配對。',
+    '請完成 Hermes Hub Gateway 安裝與配對。',
     '',
-    '請載入 `hermes-hub-gateway-pairing` skill，確認已安裝最新版 `@over01470914/hermes-hub-gateway`；需要批准任何操作時直接向我提出請求，取得批准後繼續。接著確認 Gateway CLI 可用並完成配對。',
+    '先確認已安裝最新版官方套件 `@over01470914/hermes-hub-gateway`。若需要安裝或更新，直接向我請求批准執行：',
+    '`npm install -g @over01470914/hermes-hub-gateway@latest`',
+    '取得批准後繼續。',
     '',
-    '必要參數：',
-    `- Router URL: \`${router}\``,
-    `- Request ID: \`${record.requestId}\``,
-    `- Enrollment ticket: \`${enrollmentTicket}\``,
+    '確認 `hermes-hub-gateway` CLI 可用後，執行：',
+    `\`${pairCommand}\``,
+    '',
+    '其餘流程由官方 CLI 處理。成功後回傳配對碼；若 CLI 提供後續指示，依照指示繼續。',
   ].join('\n')
 }
 

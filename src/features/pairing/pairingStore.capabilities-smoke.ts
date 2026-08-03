@@ -96,14 +96,15 @@ assert.equal(
   'https://router.example.test/router-prefix',
   'operator-configured Router base paths must be preserved'
 )
-assert.match(pathRequest.prompt, /^請完成 Hermes Hub Gateway 配對。/)
-assert.match(pathRequest.prompt, /載入 `hermes-hub-gateway-pairing` skill/)
-assert.match(pathRequest.prompt, /確認已安裝最新版 `@over01470914\/hermes-hub-gateway`/)
-assert.match(pathRequest.prompt, /需要批准任何操作時直接向我提出請求/)
-assert.match(pathRequest.prompt, /Router URL: `https:\/\/router\.example\.test\/router-prefix`/)
-assert.match(pathRequest.prompt, new RegExp(`Request ID: \`${pathRequest.requestId}\``))
-assert.match(pathRequest.prompt, /Enrollment ticket: `enr_[a-f0-9]{32}\.[A-Za-z0-9_-]{43}`/)
-assert.doesNotMatch(pathRequest.prompt, /不要重試|僅執行一次|FAILED step|PAIRING_DIAGNOSIS|command -v|npm list -g|npm view|npm install -g/)
+assert.match(pathRequest.prompt, /^請完成 Hermes Hub Gateway 安裝與配對。/)
+assert.match(pathRequest.prompt, /最新版官方套件 `@over01470914\/hermes-hub-gateway`/)
+assert.match(pathRequest.prompt, /直接向我請求批准執行/)
+assert.match(pathRequest.prompt, /npm install -g @over01470914\/hermes-hub-gateway@latest/)
+assert.match(pathRequest.prompt, /hermes-hub-gateway pair --runtime hermes --router "https:\/\/router\.example\.test\/router-prefix"/)
+assert.match(pathRequest.prompt, new RegExp(`--request-id "${pathRequest.requestId}"`))
+assert.match(pathRequest.prompt, /--enrollment-ticket "enr_[a-f0-9]{32}\.[A-Za-z0-9_-]{43}"/)
+assert.match(pathRequest.prompt, /其餘流程由官方 CLI 處理/)
+assert.doesNotMatch(pathRequest.prompt, /\bskill\b|不要重試|僅執行一次|FAILED step|PAIRING_DIAGNOSIS|command -v|npm list -g|npm view/)
 assert.doesNotMatch(pathRequest.prompt, /Expires at \(UTC\):|Capabilities:/)
 assert.doesNotMatch(pathRequest.prompt, /new uniquely named \.mjs helper/)
 assert.doesNotMatch(pathRequest.prompt, /<verified-installer-path>|HERMES_COMMAND|HERMES_HUB_AGENT_APPROVAL_TOKEN/)
@@ -115,21 +116,21 @@ const traditionalPrompt = pathStore.create({
   user: 'traditional-prompt',
   client: { appName: 'Hermes Hub', locale: 'traditionalChinese' },
 }).prompt
-assert.match(traditionalPrompt, /請完成 Hermes Hub Gateway 配對/)
-assert.match(traditionalPrompt, /必要參數：/)
+assert.match(traditionalPrompt, /請完成 Hermes Hub Gateway 安裝與配對/)
+assert.match(traditionalPrompt, /hermes-hub-gateway pair --runtime hermes/)
 
 const simplifiedPrompt = pathStore.create({
   user: 'simplified-prompt',
   client: { appName: 'Hermes Hub', locale: 'zh-CN' },
 }).prompt
-assert.match(simplifiedPrompt, /請完成 Hermes Hub Gateway 配對/)
-assert.match(simplifiedPrompt, /必要參數：/)
+assert.match(simplifiedPrompt, /請完成 Hermes Hub Gateway 安裝與配對/)
+assert.match(simplifiedPrompt, /hermes-hub-gateway pair --runtime hermes/)
 
 const fallbackPrompt = pathStore.create({
   user: 'fallback-prompt',
   client: { appName: 'Hermes Hub', locale: 'unsupported-locale' },
 }).prompt
-assert.match(fallbackPrompt, /請完成 Hermes Hub Gateway 配對/)
+assert.match(fallbackPrompt, /請完成 Hermes Hub Gateway 安裝與配對/)
 
 console.log(JSON.stringify({
   ok: true,
@@ -140,6 +141,6 @@ console.log(JSON.stringify({
     'explicit feature grants are preserved and deduplicated',
     'pairing claims preserve only requested grants',
     'Router base paths are preserved without trusting Client input',
-    'pairing prompts provide only the task, approval handoff, and request parameters'
+    'pairing prompts are self-contained with official install and pair commands'
   ]
 }, null, 2))

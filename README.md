@@ -98,10 +98,10 @@ name, version, and runtime manifest SHA-256. The Router does not serve
 executable Gateway runtime files.
 
 The pairing prompt emits one fixed Traditional Chinese task and does not vary
-by Client locale. It names the Gateway operations skill and official package,
-asks the agent to request user approval when needed, and supplies only the
-Router URL, request id, and enrollment ticket. Command ordering, recovery, and
-failure reporting are left to the operations skill and agent. The CLI owns Hermes
+by Client locale. It is self-contained and does not depend on any separately
+installed skill: it names the official npm package, gives the approval-aware
+global install command, and gives one `pair` command containing the Router URL,
+request id, and enrollment ticket. The official CLI owns Hermes
 readiness checks and first authenticates the persisted Gateway through
 `GET /router/hermes-hub-gateways/self`. An active online Gateway with a shared
 protocol returns the Router-issued code without Plugin replacement or restart;
