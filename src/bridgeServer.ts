@@ -2615,6 +2615,19 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           read: false,
           write: gatewayAdvertisesCapability(payload.hermesAgentId, 'attachments.write'),
         },
+        nativeSession: {
+          // These controls are optional enhancements to a native submission.
+          // Keep `session.message` usable with the Agent default model when an
+          // older Gateway has not advertised either control capability.
+          modelSelection: gatewayAdvertisesCapability(
+            payload.hermesAgentId,
+            'session.model-selection',
+          ),
+          runtimeControls: gatewayAdvertisesCapability(
+            payload.hermesAgentId,
+            'session.runtime-controls',
+          ),
+        },
         notifications: {
           local: true,
           push: Boolean(pushDeviceRegistry && jpushProvider.configured),
