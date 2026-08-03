@@ -142,6 +142,10 @@ const allowedCapabilities = new Set([
 export const PAIRING_RECORD_SCHEMA_VERSION = 'hermes-hub-pairing/v2' as const
 export const MAX_LIVE_PAIRING_REQUESTS = 64
 
+function pairingStateError(message: string, code: string, statusCode = 409): Error {
+  return Object.assign(new Error(message), { code, statusCode })
+}
+
 export class PairingCapacityError extends Error {
   constructor(readonly retryAfterSeconds: number) {
     super('Pairing request capacity reached; retry after an existing request expires')
@@ -458,7 +462,10 @@ export class InMemoryPairingStore {
     const before = cloneRecord(record)
     if (record.claimedAt) throw new Error('Pairing request already claimed')
     if (record.gatewayCredentialState === 'revoked') {
-      throw new Error('Revoked Gateway credentials cannot be reused')
+      throw pairingStateError(
+        'Revoked Gateway credentials cannot be reused',
+        'gateway_credential_revoked',
+      )
     }
     const approvalOptions = typeof options === 'function' ? { codeGenerator: options } : options
     const codeGenerator = approvalOptions.codeGenerator || generateEightDigitCode
@@ -483,7 +490,10 @@ export class InMemoryPairingStore {
       record.gatewayId !== gatewayId ||
       record.gatewayTokenHash !== gatewayTokenHash
     )) {
-      throw new Error('Pairing request already approved for another Gateway credential')
+      throw pairingStateError(
+        'Pairing request already approved for another Gateway credential',
+        'pairing_approval_conflict',
+      )
     }
     const matchingGatewayRecords = [...this.records.values()].filter(item => (
       item.requestId !== record.requestId && item.gatewayId === gatewayId && item.gatewayTokenHash
@@ -491,10 +501,16 @@ export class InMemoryPairingStore {
     if (matchingGatewayRecords.some(item => (
       item.hermesAgentId !== hermesAgentId || item.gatewayTokenHash !== gatewayTokenHash
     ))) {
-      throw new Error('Gateway id is already bound to another credential')
+      throw pairingStateError(
+        'Gateway id is already bound to another credential',
+        'gateway_credential_conflict',
+      )
     }
     if (matchingGatewayRecords.some(item => inferredCredentialState(item) === 'revoked')) {
-      throw new Error('Revoked Gateway credentials cannot be reused')
+      throw pairingStateError(
+        'Revoked Gateway credentials cannot be reused',
+        'gateway_credential_revoked',
+      )
     }
     const activeCredential = matchingGatewayRecords.find(item => inferredCredentialState(item) === 'active')
     record.approvedAt = this.nowSeconds()
@@ -526,17 +542,20 @@ export class InMemoryPairingStore {
   enroll(requestId: string, enrollmentTicket: string, options: PairingApprovalOptions): PairingApproval {
     const record = this.requireLive(requestId)
     if (record.approvedAt || record.enrollmentConsumedAt) {
-      throw Object.assign(new Error('Gateway enrollment ticket has already been consumed'), {
-        code: 'gateway_enrollment_consumed',
-      })
+      throw pairingStateError(
+        'Gateway enrollment ticket has already been consumed',
+        'gateway_enrollment_consumed',
+      )
     }
     const expectedTicket = buildGatewayEnrollmentTicket(this.secret, record)
     const supplied = Buffer.from(enrollmentTicket || '')
     const expected = Buffer.from(expectedTicket)
     if (!expectedTicket || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
-      throw Object.assign(new Error('Gateway enrollment ticket is invalid'), {
-        code: 'gateway_enrollment_invalid',
-      })
+      throw pairingStateError(
+        'Gateway enrollment ticket is invalid',
+        'gateway_enrollment_invalid',
+        401,
+      )
     }
 
     return this.approve(requestId, { ...options, consumeEnrollmentTicket: true })

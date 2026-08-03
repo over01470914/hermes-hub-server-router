@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 
 import {
+  buildGatewayEnrollmentTicket,
   InMemoryPairingStore,
   type PairingRequestRecord,
 } from './pairingStore.js'
@@ -156,6 +157,30 @@ const secondClaim = store.claim(secondRequestId, secondApproval.randomCode)
 assert.equal(secondClaim.credentialRotated, false)
 assert.deepEqual(secondClaim.revokedGatewayIds, [])
 
+const enrolledRequestId = request('device_enrollment_conflict')
+const enrolledRecord = persisted.find(item => item.requestId === enrolledRequestId)
+assert.ok(enrolledRecord)
+const enrollmentTicket = buildGatewayEnrollmentTicket(secret, enrolledRecord)
+store.enroll(enrolledRequestId, enrollmentTicket, {
+  codeGenerator: () => '23232323',
+  hermesAgentId,
+  gatewayId: originalGatewayId,
+  gatewayToken: originalToken,
+})
+assert.throws(
+  () => store.enroll(enrolledRequestId, enrollmentTicket, {
+    codeGenerator: () => '24242424',
+    hermesAgentId,
+    gatewayId: originalGatewayId,
+    gatewayToken: originalToken,
+  }),
+  (error: unknown) => {
+    const conflict = error as { code?: string; statusCode?: number }
+    return conflict.code === 'gateway_enrollment_consumed' && conflict.statusCode === 409
+  },
+  'a consumed enrollment ticket must return a stable conflict instead of an internal error',
+)
+
 const rotationRequestId = request('device_rotation')
 const rotationApproval = store.approve(rotationRequestId, {
   codeGenerator: () => '33333333',
@@ -266,6 +291,7 @@ console.log(JSON.stringify({
   checks: [
     'first-time credentials remain provisional until claim',
     'same active Gateway credential supports another device pairing',
+    'consumed enrollment tickets return a stable 409 conflict',
     'rotation atomically promotes the candidate and revokes the old credential',
     'active and revoked states survive Router restart',
     'revoked credentials cannot be recycled',
