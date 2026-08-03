@@ -319,72 +319,35 @@ export function buildGatewayEnrollmentTicket(secret: string, record: PairingRequ
   return `enr_${record.enrollmentNonce}.${signature}`
 }
 
-type PairingPromptLocale = 'english' | 'traditionalChinese' | 'simplifiedChinese'
-
-function pairingPromptLocale(value: string | undefined): PairingPromptLocale {
-  const normalized = (value || '').trim().toLowerCase().replaceAll('_', '-')
-  if (['traditionalchinese', 'zh-tw', 'zh-hant', 'zh-hk', 'zh-mo'].includes(normalized)) {
-    return 'traditionalChinese'
-  }
-  if (['simplifiedchinese', 'zh-cn', 'zh-hans', 'zh-sg'].includes(normalized)) {
-    return 'simplifiedChinese'
-  }
-  return 'english'
-}
-
 export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicket = ''): string {
   const router = record.routerUrl.replace(/\/$/, '')
-  const enrollmentArgument = enrollmentTicket
-    ? ` --enrollment-ticket "${enrollmentTicket}"`
-    : ''
-  const pairCommand = `hermes-hub-gateway pair --runtime hermes --router "${router}" --request-id "${record.requestId}"${enrollmentArgument}`
-  const inspectCommand = 'npm list -g @over01470914/hermes-hub-gateway --depth=0 --json'
-  const latestCommand = 'npm view @over01470914/hermes-hub-gateway@latest version --json'
-  const npmCommand = 'npm install -g @over01470914/hermes-hub-gateway@latest'
-  const commandCheck = 'command -v hermes-hub-gateway'
-  const pathRepairCommand = 'export PATH="$(npm prefix -g)/bin:$PATH"'
-
-  switch (pairingPromptLocale(record.client?.locale)) {
-    case 'traditionalChinese':
-      return [
-        'Hermes Hub Gateway 配對',
-        '',
-        `1. 先執行 \`${inspectCommand}\`，再執行 \`${latestCommand}\`，比較已安裝版本與 latest。`,
-        `2. 若未安裝或版本不同，執行 \`${npmCommand}\`。這個或後續命令需要授權時，直接向使用者提出 approval 請求並等待；取得批准後繼續，不要回傳 \`NEEDS_APPROVAL\` 或 \`FAILED\`。`,
-        `3. 載入 \`hermes-hub-gateway-pairing\` skill，執行 \`${commandCheck}\`。若找不到命令，執行 \`${pathRepairCommand}\` 後再檢查一次；仍找不到就回傳 \`FAILED step PATH: hermes-hub-gateway is not on PATH\`。`,
-        `4. 若 Router URL 帶有 \`@url:\` 或反引號顯示包裝，只保留內層 URL。`,
-        `5. 接著只執行一次：`,
-        `   ${pairCommand}`,
-        `6. 成功就回傳 8 位配對碼。只有命令實際執行失敗才保留 \`FAILED step ...\`，讀取 skill 的 \`references/failure-points.md\`，再附上 \`PAIRING_DIAGNOSIS [problem_key] layer=<layer> disposition=<disposition>\`。失敗後停止，等 Client 建立新的 pairing request。`,
-        '不要顯示 enrollment ticket、Gateway credential 或其他秘密。',
-      ].join('\n')
-    case 'simplifiedChinese':
-      return [
-        'Hermes Hub Gateway 配对',
-        '',
-        `1. 先执行 \`${inspectCommand}\`，再执行 \`${latestCommand}\`，比较已安装版本与 latest。`,
-        `2. 如果未安装或版本不同，执行 \`${npmCommand}\`。这个或后续命令需要授权时，直接向用户提出 approval 请求并等待；获得批准后继续，不要返回 \`NEEDS_APPROVAL\` 或 \`FAILED\`。`,
-        `3. 加载 \`hermes-hub-gateway-pairing\` skill，执行 \`${commandCheck}\`。如果找不到命令，执行 \`${pathRepairCommand}\` 后再检查一次；仍找不到就返回 \`FAILED step PATH: hermes-hub-gateway is not on PATH\`。`,
-        `4. 如果 Router URL 带有 \`@url:\` 或反引号显示包装，只保留内层 URL。`,
-        `5. 接着只执行一次：`,
-        `   ${pairCommand}`,
-        `6. 成功就返回 8 位配对码。只有命令实际执行失败才保留 \`FAILED step ...\`，读取 skill 的 \`references/failure-points.md\`，再附上 \`PAIRING_DIAGNOSIS [problem_key] layer=<layer> disposition=<disposition>\`。失败后停止，等待 Client 创建新的 pairing request。`,
-        '不要显示 enrollment ticket、Gateway credential 或其他秘密。',
-      ].join('\n')
-    case 'english':
-      return [
-        'Hermes Hub Gateway pairing',
-        '',
-        `1. Run \`${inspectCommand}\`, then \`${latestCommand}\`, and compare the installed version with latest.`,
-        `2. If missing or different, run \`${npmCommand}\`. If this or any later command needs approval, ask the user through the approval request and wait; continue after approval, and do not return \`NEEDS_APPROVAL\` or \`FAILED\`.`,
-        `3. Load the \`hermes-hub-gateway-pairing\` skill and run \`${commandCheck}\`. If missing, run \`${pathRepairCommand}\` and check once more; if still missing, return \`FAILED step PATH: hermes-hub-gateway is not on PATH\`.`,
-        `4. If the Router URL has an \`@url:\` or backtick display wrapper, keep only the inner URL.`,
-        `5. Then run exactly once:`,
-        `   ${pairCommand}`,
-        `6. On success, return the 8-digit code. Only after a command actually runs and fails, keep \`FAILED step ...\`, read the skill's \`references/failure-points.md\`, and append \`PAIRING_DIAGNOSIS [problem_key] layer=<layer> disposition=<disposition>\`. Stop and wait for a fresh Client pairing request.`,
-        'Do not display the enrollment ticket, Gateway credential, or other secrets.',
-      ].join('\n')
-  }
+  const pairCommand = `hermes-hub-gateway pair --runtime hermes --router "${router}" --request-id "${record.requestId}" --enrollment-ticket "${enrollmentTicket}"`
+  return [
+    '執行 Hermes Hub Gateway 配對；全程依序進行，不要重試 pairing。',
+    '',
+    '1. 載入 `hermes-hub-gateway-operations` skill。',
+    '2. 依序執行：',
+    '   - `npm list -g @over01470914/hermes-hub-gateway --depth=0 --json`',
+    '   - `npm view @over01470914/hermes-hub-gateway@latest version --json`',
+    '3. 若未安裝或版本不同，先向我請求批准執行：',
+    '   `npm install -g @over01470914/hermes-hub-gateway@latest`',
+    '   取得批准後安裝並繼續。',
+    '4. 執行 `command -v hermes-hub-gateway`。找不到時，先執行：',
+    '   `export PATH="$(npm prefix -g)/bin:$PATH"`',
+    '   再檢查一次；仍找不到就回傳：',
+    '   `FAILED step PATH: hermes-hub-gateway is not on PATH`',
+    '5. Router 只接受純 HTTPS origin；移除 `@url:`、反引號或其他包裝。',
+    '6. 僅執行一次：',
+    `   \`${pairCommand}\``,
+    '',
+    '回傳規則：',
+    '- 成功：只回傳 8 位配對碼。',
+    '- 已實際執行但失敗：保留第一行 `FAILED step ...`；讀取',
+    '  `hermes-hub-gateway-operations/references/failure-points.md`，',
+    '  再附一行：',
+    '  `PAIRING_DIAGNOSIS [problem_key] layer=<layer> disposition=<disposition>`',
+    '- 失敗後停止，等待新的 pairing request；不要重試、不要顯示 ticket、credential 或任何 secret。',
+  ].join('\n')
 }
 
 export class InMemoryPairingStore {

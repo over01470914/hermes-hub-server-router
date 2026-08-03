@@ -97,12 +97,12 @@ runtime and deterministic pairing core. `/router/health` publishes the package
 name, version, and runtime manifest SHA-256. The Router does not serve
 executable Gateway runtime files.
 
-The pairing prompt uses the Client Settings locale and emits the same compact
-command-first flow in English, Traditional Chinese, or Simplified Chinese.
-It reuses an available CLI; only a missing command requests native approval
+The pairing prompt emits one fixed Traditional Chinese command-first flow and
+does not vary its instructions by Client locale. It checks the installed and
+latest CLI versions; a missing or different version requests native approval
 for the global npm install. The agent presents the approval request directly to
 the user and waits instead of returning a textual `NEEDS_APPROVAL` or `FAILED`;
-only an executed command failure is reported as failed. Unknown locales fall back to English. The CLI owns Hermes
+only an executed command failure is reported as failed. The CLI owns Hermes
 readiness checks and first authenticates the persisted Gateway through
 `GET /router/hermes-hub-gateways/self`. An active online Gateway with a shared
 protocol returns the Router-issued code without Plugin replacement or restart;
