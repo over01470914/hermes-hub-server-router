@@ -324,7 +324,7 @@ export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicke
   return [
     '請完成 Hermes Hub Gateway 配對。',
     '',
-    '請載入 `hermes-hub-gateway-operations` skill，確認已安裝最新版 `@over01470914/hermes-hub-gateway`；需要批准任何操作時直接向我提出請求，取得批准後繼續。接著確認 Gateway CLI 可用並完成配對。',
+    '請載入 `hermes-hub-gateway-pairing` skill，確認已安裝最新版 `@over01470914/hermes-hub-gateway`；需要批准任何操作時直接向我提出請求，取得批准後繼續。接著確認 Gateway CLI 可用並完成配對。',
     '',
     '必要參數：',
     `- Router URL: \`${router}\``,

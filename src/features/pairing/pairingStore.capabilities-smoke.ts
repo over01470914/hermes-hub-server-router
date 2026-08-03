@@ -97,7 +97,7 @@ assert.equal(
   'operator-configured Router base paths must be preserved'
 )
 assert.match(pathRequest.prompt, /^請完成 Hermes Hub Gateway 配對。/)
-assert.match(pathRequest.prompt, /載入 `hermes-hub-gateway-operations` skill/)
+assert.match(pathRequest.prompt, /載入 `hermes-hub-gateway-pairing` skill/)
 assert.match(pathRequest.prompt, /確認已安裝最新版 `@over01470914\/hermes-hub-gateway`/)
 assert.match(pathRequest.prompt, /需要批准任何操作時直接向我提出請求/)
 assert.match(pathRequest.prompt, /Router URL: `https:\/\/router\.example\.test\/router-prefix`/)
