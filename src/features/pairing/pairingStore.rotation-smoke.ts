@@ -51,6 +51,12 @@ assert.match(hostileRequest.prompt, /package is missing or the two versions diff
 assert.doesNotMatch(hostileRequest.prompt, /1\.1\.0/)
 assert.match(hostileRequest.prompt, /NEEDS_APPROVAL: npm install -g/)
 assert.match(hostileRequest.prompt, /pairing command exactly once/)
+assert.match(hostileRequest.prompt, /6\. Report the result:/)
+assert.match(hostileRequest.prompt, /references\/failure-points\.md/)
+assert.match(hostileRequest.prompt, /PAIRING_DIAGNOSIS \[problem_key\] layer=<layer> disposition=<disposition>/)
+assert.match(hostileRequest.prompt, /pairing_failure_unclassified/)
+assert.match(hostileRequest.prompt, /Do not run extra diagnostics, clear identity, restart services, or retry/)
+assert.match(hostileRequest.prompt, /Client must create a fresh pairing request/)
 assert.match(hostileRequest.prompt, /Version or manifest-SHA differences do not block pairing/)
 assert.doesNotMatch(hostileRequest.prompt, /traditionalChinese|attacker command/)
 assert.doesNotMatch(hostileRequest.prompt, /Expires at \(UTC\):|Capabilities:/)
@@ -233,6 +239,11 @@ assert.throws(
     gatewayToken: originalToken,
   }),
   /Revoked Gateway credentials cannot be reused/,
+)
+assert.match(
+  hostileRequest.prompt,
+  /match the skill's failure-points catalog/,
+  'Hermes must classify revoked credential reuse through the stable skill catalog',
 )
 
 const expiringRequestId = request('device_expiring', 120)

@@ -112,6 +112,15 @@ assert.doesNotMatch(pathRequest.prompt, /1\.1\.0/)
 assert.match(pathRequest.prompt, /request native Hermes approval/)
 assert.match(pathRequest.prompt, /NEEDS_APPROVAL: npm install -g/)
 assert.match(pathRequest.prompt, /pairing command exactly once/)
+assert.match(pathRequest.prompt, /3\. Load policy and check PATH:/)
+assert.match(pathRequest.prompt, /4\. Normalize command arguments:/)
+assert.match(pathRequest.prompt, /5\. Run pairing once:/)
+assert.match(pathRequest.prompt, /6\. Report the result:/)
+assert.match(pathRequest.prompt, /references\/failure-points\.md/)
+assert.match(pathRequest.prompt, /PAIRING_DIAGNOSIS \[problem_key\] layer=<layer> disposition=<disposition>/)
+assert.match(pathRequest.prompt, /pairing_failure_unclassified/)
+assert.match(pathRequest.prompt, /Do not run extra diagnostics, clear identity, restart services, or retry/)
+assert.match(pathRequest.prompt, /Client must create a fresh pairing request/)
 assert.match(pathRequest.prompt, /reuses a healthy Gateway/)
 assert.match(pathRequest.prompt, /Hermes Desktop may rewrite the Router URL in pasted text/)
 assert.match(pathRequest.prompt, /pass only the inner URL as the single plain-text argv value/)
@@ -142,6 +151,11 @@ assert.match(traditionalPrompt, /確認最終 Shell 命令不含 `@url:` 或任�
 assert.match(traditionalPrompt, /Bash 會把反引號當成命令替換/)
 assert.match(traditionalPrompt, /成功時只回傳 CLI 輸出的 8 位配對碼/)
 assert.match(traditionalPrompt, /hermes-hub-gateway pair --runtime hermes/)
+assert.match(traditionalPrompt, /3\. 載入規範並檢查 PATH：/)
+assert.match(traditionalPrompt, /6\. 回報結果：/)
+assert.match(traditionalPrompt, /references\/failure-points\.md/)
+assert.match(traditionalPrompt, /PAIRING_DIAGNOSIS \[problem_key\]/)
+assert.match(traditionalPrompt, /必須由 Client 建立新的 pairing request/)
 
 const simplifiedPrompt = pathStore.create({
   user: 'simplified-prompt',
@@ -159,6 +173,11 @@ assert.match(simplifiedPrompt, /确认最终 Shell 命令不含 `@url:` 或任�
 assert.match(simplifiedPrompt, /Bash 会把反引号当成命令替换/)
 assert.match(simplifiedPrompt, /成功时只返回 CLI 输出的 8 位配对码/)
 assert.match(simplifiedPrompt, /hermes-hub-gateway pair --runtime hermes/)
+assert.match(simplifiedPrompt, /3\. 加载规范并检查 PATH：/)
+assert.match(simplifiedPrompt, /6\. 回报结果：/)
+assert.match(simplifiedPrompt, /references\/failure-points\.md/)
+assert.match(simplifiedPrompt, /PAIRING_DIAGNOSIS \[problem_key\]/)
+assert.match(simplifiedPrompt, /必须由 Client 创建新的 pairing request/)
 
 const fallbackPrompt = pathStore.create({
   user: 'fallback-prompt',
