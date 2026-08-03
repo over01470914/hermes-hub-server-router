@@ -335,6 +335,8 @@ export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicke
   const inspectCommand = 'npm list -g @over01470914/hermes-hub-gateway --depth=0 --json'
   const latestCommand = 'npm view @over01470914/hermes-hub-gateway@latest version --json'
   const npmCommand = 'npm install -g @over01470914/hermes-hub-gateway@latest'
+  const commandCheck = 'command -v hermes-hub-gateway'
+  const pathRepairCommand = 'export PATH="$(npm prefix -g)/bin:$PATH"'
 
   switch (pairingPromptLocale(record.client?.locale)) {
     case 'traditionalChinese':
@@ -342,7 +344,7 @@ export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicke
         'Hermes Hub Gateway 配對',
         '',
         `1. 先執行 \`${inspectCommand}\` 讀取本機全域 CLI 套件版本，再執行 \`${latestCommand}\` 讀取 npm registry 的 latest 版本。若套件不存在或兩個版本不相同，為 \`${npmCommand}\` 請求 Hermes 原生授權並等待使用者批准；只有已安裝版本正好等於 latest 時才跳過升級。不要把版本號寫死、不要使用 Router release metadata 代替 registry 比對，也不要使用 \`npx\`。`,
-        '2. 命令原本可用或安裝完成後，只執行一次以下配對命令；CLI 會自行使用健康的既有 Gateway，只有缺少或不相容時才修復 Plugin。Hermes Desktop 貼上文字時可能把命令中的 Router URL 改寫成 `@url:` 加反引號包裹的 URL；執行前必須移除整個顯示包裝，只把內層 URL 當成 `--router` 的單一純文字 argv 值。確認最終 Shell 命令不含 `@url:` 或任何反引號；Bash 會把反引號當成命令替換：',
+        `2. 命令原本可用或安裝完成後，在執行配對前先執行 \`${commandCheck}\`。若找不到命令，僅針對目前 Hermes shell 執行 \`${pathRepairCommand}\`，再執行一次 \`${commandCheck}\`；這是配對前置修復，不是重試。不要用絕對路徑執行 CLI。若仍找不到命令，回傳 \`FAILED step PATH: hermes-hub-gateway is not on PATH\` 並停止。接著只執行一次以下配對命令；CLI 會自行使用健康的既有 Gateway，只有缺少或不相容時才修復 Plugin。Hermes Desktop 貼上文字時可能把命令中的 Router URL 改寫成 \`@url:\` 加反引號包裹的 URL；執行前必須移除整個顯示包裝，只把內層 URL 當成 \`--router\` 的單一純文字 argv 值。確認最終 Shell 命令不含 \`@url:\` 或任何反引號；Bash 會把反引號當成命令替換：`,
         `   ${pairCommand}`,
         `3. 若安裝授權尚未批准或被拒絕，回傳 \`NEEDS_APPROVAL: ${npmCommand}\` 並停止；這不是安裝失敗，也不要執行配對。成功時只回傳 CLI 輸出的 8 位配對碼；若有 \`NEXT:\`，原樣附在配對碼後。實際執行過的命令失敗時回傳 \`FAILED step ...\`，不要自行重試。`,
         '',
@@ -353,7 +355,7 @@ export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicke
         'Hermes Hub Gateway 配对',
         '',
         `1. 先执行 \`${inspectCommand}\` 读取本机全局 CLI 软件包版本，再执行 \`${latestCommand}\` 读取 npm registry 的 latest 版本。如果软件包不存在或两个版本不同，为 \`${npmCommand}\` 请求 Hermes 原生授权并等待用户批准；只有已安装版本正好等于 latest 时才跳过升级。不要把版本号写死、不要使用 Router release metadata 代替 registry 比对，也不要使用 \`npx\`。`,
-        '2. 命令原本可用或安装完成后，只执行一次以下配对命令；CLI 会自行使用健康的现有 Gateway，只有缺失或不兼容时才修复 Plugin。Hermes Desktop 粘贴文本时可能把命令中的 Router URL 改写成 `@url:` 加反引号包裹的 URL；执行前必须移除整个显示包装，只把内层 URL 当成 `--router` 的单一纯文本 argv 值。确认最终 Shell 命令不含 `@url:` 或任何反引号；Bash 会把反引号当成命令替换：',
+        `2. 命令原本可用或安装完成后，在执行配对前先执行 \`${commandCheck}\`。若找不到命令，仅针对当前 Hermes shell 执行 \`${pathRepairCommand}\`，再执行一次 \`${commandCheck}\`；这是配对前置修复，不是重试。不要用绝对路径执行 CLI。若仍找不到命令，返回 \`FAILED step PATH: hermes-hub-gateway is not on PATH\` 并停止。接着只执行一次以下配对命令；CLI 会自行使用健康的现有 Gateway，只有缺失或不兼容时才修复 Plugin。Hermes Desktop 粘贴文本时可能把命令中的 Router URL 改写成 \`@url:\` 加反引号包裹的 URL；执行前必须移除整个显示包装，只把内层 URL 当成 \`--router\` 的单一纯文本 argv 值。确认最终 Shell 命令不含 \`@url:\` 或任何反引号；Bash 会把反引号当成命令替换：`,
         `   ${pairCommand}`,
         `3. 如果安装授权尚未批准或被拒绝，返回 \`NEEDS_APPROVAL: ${npmCommand}\` 并停止；这不是安装失败，也不要执行配对。成功时只返回 CLI 输出的 8 位配对码；如果有 \`NEXT:\`，原样附在配对码后。实际执行过的命令失败时返回 \`FAILED step ...\`，不要自行重试。`,
         '',
@@ -364,7 +366,7 @@ export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicke
         'Hermes Hub Gateway pairing',
         '',
         `1. First run \`${inspectCommand}\` to read the locally installed global CLI package version, then run \`${latestCommand}\` to read the npm registry latest version. If the package is missing or the two versions differ, request native Hermes approval for \`${npmCommand}\` and wait for the user; skip the upgrade only when the installed version exactly equals latest. Do not hard-code a version, substitute Router release metadata for the registry comparison, or use \`npx\`.`,
-        '2. After the command is already available or installation completes, run the following pairing command exactly once. The CLI reuses a healthy Gateway and repairs the Plugin only when it is missing or incompatible. Hermes Desktop may rewrite the Router URL in pasted text as `@url:` plus a backtick-wrapped URL; before execution, remove that entire display wrapper and pass only the inner URL as the single plain-text argv value for `--router`. Confirm the final shell command contains no `@url:` and no backticks; Bash treats backticks as command substitution:',
+        `2. After the command is already available or installation completes, run \`${commandCheck}\` before pairing. If it is not found, run \`${pathRepairCommand}\` for the current Hermes shell only, then run \`${commandCheck}\` once more; this is a pairing preflight repair, not a retry. Do not invoke the CLI by an absolute path. If it is still not found, return \`FAILED step PATH: hermes-hub-gateway is not on PATH\` and stop. Then run the following pairing command exactly once. The CLI reuses a healthy Gateway and repairs the Plugin only when it is missing or incompatible. Hermes Desktop may rewrite the Router URL in pasted text as \`@url:\` plus a backtick-wrapped URL; before execution, remove that entire display wrapper and pass only the inner URL as the single plain-text argv value for \`--router\`. Confirm the final shell command contains no \`@url:\` and no backticks; Bash treats backticks as command substitution:`,
         `   ${pairCommand}`,
         `3. If installation approval is pending or denied, return \`NEEDS_APPROVAL: ${npmCommand}\` and stop; this is not an installation failure, and do not run pairing. On success, return only the CLI's 8-digit code and append any \`NEXT:\` line unchanged. If a command actually ran and failed, return \`FAILED step ...\` and do not retry.`,
         '',
