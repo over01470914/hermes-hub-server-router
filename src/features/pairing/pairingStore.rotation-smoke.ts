@@ -48,7 +48,8 @@ assert.match(hostileRequest.prompt, /hermes-hub-gateway pair --runtime hermes/)
 assert.match(hostileRequest.prompt, /npm list -g @over01470914\/hermes-hub-gateway --depth=0 --json/)
 assert.match(hostileRequest.prompt, /npm view @over01470914\/hermes-hub-gateway@latest version --json/)
 assert.doesNotMatch(hostileRequest.prompt, /1\.1\.0/)
-assert.match(hostileRequest.prompt, /NEEDS_APPROVAL: npm install -g/)
+assert.match(hostileRequest.prompt, /ask the user through the approval request and wait/)
+assert.doesNotMatch(hostileRequest.prompt, /return `NEEDS_APPROVAL:/)
 assert.match(hostileRequest.prompt, /5\. Then run exactly once:/)
 assert.match(hostileRequest.prompt, /references\/failure-points\.md/)
 assert.match(hostileRequest.prompt, /PAIRING_DIAGNOSIS \[problem_key\] layer=<layer> disposition=<disposition>/)
@@ -236,6 +237,24 @@ assert.throws(
   }),
   /Revoked Gateway credentials cannot be reused/,
 )
+const revokedReenrollmentRecord = persisted.find(item => item.requestId === revokedReuseRequestId)
+assert.ok(revokedReenrollmentRecord)
+const revokedReenrollment = store.enroll(
+  revokedReuseRequestId,
+  buildGatewayEnrollmentTicket(secret, revokedReenrollmentRecord),
+  {
+    codeGenerator: () => '45454545',
+    hermesAgentId,
+    gatewayId: originalGatewayId,
+    gatewayToken: originalToken,
+  },
+)
+assert.equal(revokedReenrollment.gatewayId, originalGatewayId)
+assert.equal(
+  store.verifyGateway(originalGatewayId, originalToken).gatewayCredentialState,
+  'provisional',
+  'a fresh one-time enrollment ticket recovers an exact revoked credential',
+)
 assert.match(
   hostileRequest.prompt,
   /references\/failure-points\.md/,
@@ -301,7 +320,7 @@ console.log(JSON.stringify({
     'consumed enrollment tickets return a stable 409 conflict',
     'rotation atomically promotes the candidate and revokes the old credential',
     'active and revoked states survive Router restart',
-    'revoked credentials cannot be recycled',
+    'revoked credentials require a fresh one-time enrollment ticket before reuse',
     'expired provisional credentials cannot reconnect',
     'failed persistence rolls credential promotion back in memory',
     'pairing prompt ignores client-supplied origins and bounds untrusted metadata',

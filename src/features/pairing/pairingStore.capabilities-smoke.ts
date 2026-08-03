@@ -104,7 +104,8 @@ assert.match(pathRequest.prompt, /command -v hermes-hub-gateway/)
 assert.match(pathRequest.prompt, /export PATH="\$\(npm prefix -g\)\/bin:\$PATH"/)
 assert.match(pathRequest.prompt, /FAILED step PATH: hermes-hub-gateway is not on PATH/)
 assert.doesNotMatch(pathRequest.prompt, /1\.1\.0/)
-assert.match(pathRequest.prompt, /NEEDS_APPROVAL: npm install -g/)
+assert.match(pathRequest.prompt, /ask the user through the approval request and wait/)
+assert.doesNotMatch(pathRequest.prompt, /return `NEEDS_APPROVAL:/)
 assert.match(pathRequest.prompt, /3\. Load the `hermes-hub-gateway-pairing` skill/)
 assert.match(pathRequest.prompt, /4\. If the Router URL has an `@url:` or backtick display wrapper/)
 assert.match(pathRequest.prompt, /5\. Then run exactly once:/)
@@ -126,7 +127,8 @@ const traditionalPrompt = pathStore.create({
   user: 'traditional-prompt',
   client: { appName: 'Hermes Hub', locale: 'traditionalChinese' },
 }).prompt
-assert.match(traditionalPrompt, /NEEDS_APPROVAL: npm install -g/)
+assert.match(traditionalPrompt, /直接向使用者提出 approval 請求並等待/)
+assert.doesNotMatch(traditionalPrompt, /回傳 `NEEDS_APPROVAL:/)
 assert.match(traditionalPrompt, /command -v hermes-hub-gateway/)
 assert.match(traditionalPrompt, /export PATH="\$\(npm prefix -g\)\/bin:\$PATH"/)
 assert.match(traditionalPrompt, /5\. 接著只執行一次：/)
@@ -142,7 +144,8 @@ const simplifiedPrompt = pathStore.create({
   user: 'simplified-prompt',
   client: { appName: 'Hermes Hub', locale: 'zh-CN' },
 }).prompt
-assert.match(simplifiedPrompt, /NEEDS_APPROVAL: npm install -g/)
+assert.match(simplifiedPrompt, /直接向用户提出 approval 请求并等待/)
+assert.doesNotMatch(simplifiedPrompt, /返回 `NEEDS_APPROVAL:/)
 assert.match(simplifiedPrompt, /command -v hermes-hub-gateway/)
 assert.match(simplifiedPrompt, /export PATH="\$\(npm prefix -g\)\/bin:\$PATH"/)
 assert.match(simplifiedPrompt, /5\. 接着只执行一次：/)

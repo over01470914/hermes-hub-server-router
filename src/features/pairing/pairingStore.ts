@@ -86,6 +86,8 @@ export interface PairingApprovalOptions {
   gatewayToken?: string
   /** Internal one-shot enrollment path; never accepted from HTTP input. */
   consumeEnrollmentTicket?: boolean
+  /** Compatibility recovery for an exact credential, gated by a fresh enrollment ticket. */
+  allowRevokedCredentialReenrollment?: boolean
 }
 
 export interface DebugGatewaySeed {
@@ -348,12 +350,12 @@ export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicke
         'Hermes Hub Gateway 配對',
         '',
         `1. 先執行 \`${inspectCommand}\`，再執行 \`${latestCommand}\`，比較已安裝版本與 latest。`,
-        `2. 若未安裝或版本不同，請求執行 \`${npmCommand}\`；等待授權時回傳 \`NEEDS_APPROVAL: ${npmCommand}\`。`,
+        `2. 若未安裝或版本不同，執行 \`${npmCommand}\`。這個或後續命令需要授權時，直接向使用者提出 approval 請求並等待；取得批准後繼續，不要回傳 \`NEEDS_APPROVAL\` 或 \`FAILED\`。`,
         `3. 載入 \`hermes-hub-gateway-pairing\` skill，執行 \`${commandCheck}\`。若找不到命令，執行 \`${pathRepairCommand}\` 後再檢查一次；仍找不到就回傳 \`FAILED step PATH: hermes-hub-gateway is not on PATH\`。`,
         `4. 若 Router URL 帶有 \`@url:\` 或反引號顯示包裝，只保留內層 URL。`,
         `5. 接著只執行一次：`,
         `   ${pairCommand}`,
-        `6. 成功就回傳 8 位配對碼。失敗就保留 \`FAILED step ...\`，讀取 skill 的 \`references/failure-points.md\`，再附上 \`PAIRING_DIAGNOSIS [problem_key] layer=<layer> disposition=<disposition>\`。失敗後停止，等 Client 建立新的 pairing request。`,
+        `6. 成功就回傳 8 位配對碼。只有命令實際執行失敗才保留 \`FAILED step ...\`，讀取 skill 的 \`references/failure-points.md\`，再附上 \`PAIRING_DIAGNOSIS [problem_key] layer=<layer> disposition=<disposition>\`。失敗後停止，等 Client 建立新的 pairing request。`,
         '不要顯示 enrollment ticket、Gateway credential 或其他秘密。',
       ].join('\n')
     case 'simplifiedChinese':
@@ -361,12 +363,12 @@ export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicke
         'Hermes Hub Gateway 配对',
         '',
         `1. 先执行 \`${inspectCommand}\`，再执行 \`${latestCommand}\`，比较已安装版本与 latest。`,
-        `2. 如果未安装或版本不同，请求执行 \`${npmCommand}\`；等待授权时返回 \`NEEDS_APPROVAL: ${npmCommand}\`。`,
+        `2. 如果未安装或版本不同，执行 \`${npmCommand}\`。这个或后续命令需要授权时，直接向用户提出 approval 请求并等待；获得批准后继续，不要返回 \`NEEDS_APPROVAL\` 或 \`FAILED\`。`,
         `3. 加载 \`hermes-hub-gateway-pairing\` skill，执行 \`${commandCheck}\`。如果找不到命令，执行 \`${pathRepairCommand}\` 后再检查一次；仍找不到就返回 \`FAILED step PATH: hermes-hub-gateway is not on PATH\`。`,
         `4. 如果 Router URL 带有 \`@url:\` 或反引号显示包装，只保留内层 URL。`,
         `5. 接着只执行一次：`,
         `   ${pairCommand}`,
-        `6. 成功就返回 8 位配对码。失败就保留 \`FAILED step ...\`，读取 skill 的 \`references/failure-points.md\`，再附上 \`PAIRING_DIAGNOSIS [problem_key] layer=<layer> disposition=<disposition>\`。失败后停止，等待 Client 创建新的 pairing request。`,
+        `6. 成功就返回 8 位配对码。只有命令实际执行失败才保留 \`FAILED step ...\`，读取 skill 的 \`references/failure-points.md\`，再附上 \`PAIRING_DIAGNOSIS [problem_key] layer=<layer> disposition=<disposition>\`。失败后停止，等待 Client 创建新的 pairing request。`,
         '不要显示 enrollment ticket、Gateway credential 或其他秘密。',
       ].join('\n')
     case 'english':
@@ -374,12 +376,12 @@ export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicke
         'Hermes Hub Gateway pairing',
         '',
         `1. Run \`${inspectCommand}\`, then \`${latestCommand}\`, and compare the installed version with latest.`,
-        `2. If missing or different, request approval for \`${npmCommand}\`; while waiting, return \`NEEDS_APPROVAL: ${npmCommand}\`.`,
+        `2. If missing or different, run \`${npmCommand}\`. If this or any later command needs approval, ask the user through the approval request and wait; continue after approval, and do not return \`NEEDS_APPROVAL\` or \`FAILED\`.`,
         `3. Load the \`hermes-hub-gateway-pairing\` skill and run \`${commandCheck}\`. If missing, run \`${pathRepairCommand}\` and check once more; if still missing, return \`FAILED step PATH: hermes-hub-gateway is not on PATH\`.`,
         `4. If the Router URL has an \`@url:\` or backtick display wrapper, keep only the inner URL.`,
         `5. Then run exactly once:`,
         `   ${pairCommand}`,
-        `6. On success, return the 8-digit code. On failure, keep \`FAILED step ...\`, read the skill's \`references/failure-points.md\`, and append \`PAIRING_DIAGNOSIS [problem_key] layer=<layer> disposition=<disposition>\`. Stop and wait for a fresh Client pairing request.`,
+        `6. On success, return the 8-digit code. Only after a command actually runs and fails, keep \`FAILED step ...\`, read the skill's \`references/failure-points.md\`, and append \`PAIRING_DIAGNOSIS [problem_key] layer=<layer> disposition=<disposition>\`. Stop and wait for a fresh Client pairing request.`,
         'Do not display the enrollment ticket, Gateway credential, or other secrets.',
       ].join('\n')
   }
@@ -512,7 +514,10 @@ export class InMemoryPairingStore {
         'gateway_credential_conflict',
       )
     }
-    if (matchingGatewayRecords.some(item => inferredCredentialState(item) === 'revoked')) {
+    if (
+      !approvalOptions.allowRevokedCredentialReenrollment
+      && matchingGatewayRecords.some(item => inferredCredentialState(item) === 'revoked')
+    ) {
       throw pairingStateError(
         'Revoked Gateway credentials cannot be reused',
         'gateway_credential_revoked',
@@ -564,7 +569,11 @@ export class InMemoryPairingStore {
       )
     }
 
-    return this.approve(requestId, { ...options, consumeEnrollmentTicket: true })
+    return this.approve(requestId, {
+      ...options,
+      consumeEnrollmentTicket: true,
+      allowRevokedCredentialReenrollment: true,
+    })
   }
 
   ensureDebugGateway(seed: DebugGatewaySeed): void {

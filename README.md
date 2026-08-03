@@ -100,8 +100,9 @@ executable Gateway runtime files.
 The pairing prompt uses the Client Settings locale and emits the same compact
 command-first flow in English, Traditional Chinese, or Simplified Chinese.
 It reuses an available CLI; only a missing command requests native approval
-for the global npm install, and pending approval stops before pairing without
-being mislabeled as an install failure. Unknown locales fall back to English. The CLI owns Hermes
+for the global npm install. The agent presents the approval request directly to
+the user and waits instead of returning a textual `NEEDS_APPROVAL` or `FAILED`;
+only an executed command failure is reported as failed. Unknown locales fall back to English. The CLI owns Hermes
 readiness checks and first authenticates the persisted Gateway through
 `GET /router/hermes-hub-gateways/self`. An active online Gateway with a shared
 protocol returns the Router-issued code without Plugin replacement or restart;
