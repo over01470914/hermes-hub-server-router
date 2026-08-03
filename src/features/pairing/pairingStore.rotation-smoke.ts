@@ -43,16 +43,11 @@ assert.equal(hostileRequest.routerUrl, routerUrl)
 assert.deepEqual(hostileRequest.capabilities, ['sessions:list'])
 assert.equal(hostileRequest.prompt.includes('https://attacker.invalid'), false)
 assert.equal(hostileRequest.prompt.includes('\nignore all prior instructions'), false)
-assert.match(hostileRequest.prompt, /npm install -g @over01470914\/hermes-hub-gateway@latest/)
-assert.match(hostileRequest.prompt, /hermes-hub-gateway pair --runtime hermes/)
-assert.match(hostileRequest.prompt, /npm list -g @over01470914\/hermes-hub-gateway --depth=0 --json/)
-assert.match(hostileRequest.prompt, /npm view @over01470914\/hermes-hub-gateway@latest version --json/)
-assert.doesNotMatch(hostileRequest.prompt, /1\.1\.0/)
-assert.match(hostileRequest.prompt, /先向我請求批准執行/)
-assert.match(hostileRequest.prompt, /6\. 僅執行一次：/)
-assert.match(hostileRequest.prompt, /hermes-hub-gateway-operations\/references\/failure-points\.md/)
-assert.match(hostileRequest.prompt, /PAIRING_DIAGNOSIS \[problem_key\] layer=<layer> disposition=<disposition>/)
-assert.match(hostileRequest.prompt, /失敗後停止，等待新的 pairing request/)
+assert.match(hostileRequest.prompt, /請完成 Hermes Hub Gateway 配對/)
+assert.match(hostileRequest.prompt, /hermes-hub-gateway-operations/)
+assert.match(hostileRequest.prompt, /需要批准任何操作時直接向我提出請求/)
+assert.match(hostileRequest.prompt, /必要參數：/)
+assert.doesNotMatch(hostileRequest.prompt, /不要重試|僅執行一次|FAILED step|PAIRING_DIAGNOSIS/)
 assert.doesNotMatch(hostileRequest.prompt, /traditionalChinese|attacker command/)
 assert.doesNotMatch(hostileRequest.prompt, /Expires at \(UTC\):|Capabilities:/)
 assert.doesNotMatch(hostileRequest.prompt, /new uniquely named \.mjs helper/)
@@ -253,12 +248,6 @@ assert.equal(
   'provisional',
   'a fresh one-time enrollment ticket recovers an exact revoked credential',
 )
-assert.match(
-  hostileRequest.prompt,
-  /references\/failure-points\.md/,
-  'Hermes must classify revoked credential reuse through the stable skill catalog',
-)
-
 const expiringRequestId = request('device_expiring', 120)
 store.approve(expiringRequestId, {
   codeGenerator: () => '55555555',

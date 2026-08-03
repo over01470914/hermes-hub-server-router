@@ -96,24 +96,14 @@ assert.equal(
   'https://router.example.test/router-prefix',
   'operator-configured Router base paths must be preserved'
 )
-assert.match(pathRequest.prompt, /npm install -g @over01470914\/hermes-hub-gateway@latest/)
-assert.match(pathRequest.prompt, /npm list -g @over01470914\/hermes-hub-gateway --depth=0 --json/)
-assert.match(pathRequest.prompt, /npm view @over01470914\/hermes-hub-gateway@latest version --json/)
-assert.match(pathRequest.prompt, /hermes-hub-gateway pair --runtime hermes --router "https:\/\/router\.example\.test\/router-prefix"/)
-assert.match(pathRequest.prompt, /command -v hermes-hub-gateway/)
-assert.match(pathRequest.prompt, /export PATH="\$\(npm prefix -g\)\/bin:\$PATH"/)
-assert.match(pathRequest.prompt, /FAILED step PATH: hermes-hub-gateway is not on PATH/)
-assert.doesNotMatch(pathRequest.prompt, /1\.1\.0/)
-assert.match(pathRequest.prompt, /^執行 Hermes Hub Gateway 配對；全程依序進行，不要重試 pairing。/)
-assert.match(pathRequest.prompt, /1\. 載入 `hermes-hub-gateway-operations` skill。/)
-assert.match(pathRequest.prompt, /3\. 若未安裝或版本不同，先向我請求批准執行：/)
-assert.match(pathRequest.prompt, /5\. Router 只接受純 HTTPS origin；移除 `@url:`、反引號或其他包裝。/)
-assert.match(pathRequest.prompt, /6\. 僅執行一次：/)
-assert.match(pathRequest.prompt, /成功：只回傳 8 位配對碼/)
-assert.match(pathRequest.prompt, /hermes-hub-gateway-operations\/references\/failure-points\.md/)
-assert.match(pathRequest.prompt, /PAIRING_DIAGNOSIS \[problem_key\] layer=<layer> disposition=<disposition>/)
-assert.match(pathRequest.prompt, /失敗後停止，等待新的 pairing request；不要重試、不要顯示 ticket、credential 或任何 secret/)
-assert.doesNotMatch(pathRequest.prompt, /--router "@url:/)
+assert.match(pathRequest.prompt, /^請完成 Hermes Hub Gateway 配對。/)
+assert.match(pathRequest.prompt, /載入 `hermes-hub-gateway-operations` skill/)
+assert.match(pathRequest.prompt, /確認已安裝最新版 `@over01470914\/hermes-hub-gateway`/)
+assert.match(pathRequest.prompt, /需要批准任何操作時直接向我提出請求/)
+assert.match(pathRequest.prompt, /Router URL: `https:\/\/router\.example\.test\/router-prefix`/)
+assert.match(pathRequest.prompt, new RegExp(`Request ID: \`${pathRequest.requestId}\``))
+assert.match(pathRequest.prompt, /Enrollment ticket: `enr_[a-f0-9]{32}\.[A-Za-z0-9_-]{43}`/)
+assert.doesNotMatch(pathRequest.prompt, /不要重試|僅執行一次|FAILED step|PAIRING_DIAGNOSIS|command -v|npm list -g|npm view|npm install -g/)
 assert.doesNotMatch(pathRequest.prompt, /Expires at \(UTC\):|Capabilities:/)
 assert.doesNotMatch(pathRequest.prompt, /new uniquely named \.mjs helper/)
 assert.doesNotMatch(pathRequest.prompt, /<verified-installer-path>|HERMES_COMMAND|HERMES_HUB_AGENT_APPROVAL_TOKEN/)
@@ -125,33 +115,21 @@ const traditionalPrompt = pathStore.create({
   user: 'traditional-prompt',
   client: { appName: 'Hermes Hub', locale: 'traditionalChinese' },
 }).prompt
-assert.match(traditionalPrompt, /執行 Hermes Hub Gateway 配對/)
-assert.match(traditionalPrompt, /command -v hermes-hub-gateway/)
-assert.match(traditionalPrompt, /export PATH="\$\(npm prefix -g\)\/bin:\$PATH"/)
-assert.match(traditionalPrompt, /6\. 僅執行一次：/)
-assert.match(traditionalPrompt, /成功：只回傳 8 位配對碼/)
-assert.match(traditionalPrompt, /hermes-hub-gateway pair --runtime hermes/)
-assert.match(traditionalPrompt, /hermes-hub-gateway-operations\/references\/failure-points\.md/)
-assert.match(traditionalPrompt, /PAIRING_DIAGNOSIS \[problem_key\]/)
+assert.match(traditionalPrompt, /請完成 Hermes Hub Gateway 配對/)
+assert.match(traditionalPrompt, /必要參數：/)
 
 const simplifiedPrompt = pathStore.create({
   user: 'simplified-prompt',
   client: { appName: 'Hermes Hub', locale: 'zh-CN' },
 }).prompt
-assert.match(simplifiedPrompt, /執行 Hermes Hub Gateway 配對/)
-assert.match(simplifiedPrompt, /command -v hermes-hub-gateway/)
-assert.match(simplifiedPrompt, /export PATH="\$\(npm prefix -g\)\/bin:\$PATH"/)
-assert.match(simplifiedPrompt, /6\. 僅執行一次：/)
-assert.match(simplifiedPrompt, /成功：只回傳 8 位配對碼/)
-assert.match(simplifiedPrompt, /hermes-hub-gateway pair --runtime hermes/)
-assert.match(simplifiedPrompt, /hermes-hub-gateway-operations\/references\/failure-points\.md/)
-assert.match(simplifiedPrompt, /PAIRING_DIAGNOSIS \[problem_key\]/)
+assert.match(simplifiedPrompt, /請完成 Hermes Hub Gateway 配對/)
+assert.match(simplifiedPrompt, /必要參數：/)
 
 const fallbackPrompt = pathStore.create({
   user: 'fallback-prompt',
   client: { appName: 'Hermes Hub', locale: 'unsupported-locale' },
 }).prompt
-assert.match(fallbackPrompt, /執行 Hermes Hub Gateway 配對/)
+assert.match(fallbackPrompt, /請完成 Hermes Hub Gateway 配對/)
 
 console.log(JSON.stringify({
   ok: true,
@@ -162,6 +140,6 @@ console.log(JSON.stringify({
     'explicit feature grants are preserved and deduplicated',
     'pairing claims preserve only requested grants',
     'Router base paths are preserved without trusting Client input',
-    'pairing prompts use the fixed operator-provided Traditional Chinese flow'
+    'pairing prompts provide only the task, approval handoff, and request parameters'
   ]
 }, null, 2))

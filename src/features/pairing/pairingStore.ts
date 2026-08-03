@@ -321,32 +321,15 @@ export function buildGatewayEnrollmentTicket(secret: string, record: PairingRequ
 
 export function buildPairingPrompt(record: PairingRequestRecord, enrollmentTicket = ''): string {
   const router = record.routerUrl.replace(/\/$/, '')
-  const pairCommand = `hermes-hub-gateway pair --runtime hermes --router "${router}" --request-id "${record.requestId}" --enrollment-ticket "${enrollmentTicket}"`
   return [
-    '執行 Hermes Hub Gateway 配對；全程依序進行，不要重試 pairing。',
+    '請完成 Hermes Hub Gateway 配對。',
     '',
-    '1. 載入 `hermes-hub-gateway-operations` skill。',
-    '2. 依序執行：',
-    '   - `npm list -g @over01470914/hermes-hub-gateway --depth=0 --json`',
-    '   - `npm view @over01470914/hermes-hub-gateway@latest version --json`',
-    '3. 若未安裝或版本不同，先向我請求批准執行：',
-    '   `npm install -g @over01470914/hermes-hub-gateway@latest`',
-    '   取得批准後安裝並繼續。',
-    '4. 執行 `command -v hermes-hub-gateway`。找不到時，先執行：',
-    '   `export PATH="$(npm prefix -g)/bin:$PATH"`',
-    '   再檢查一次；仍找不到就回傳：',
-    '   `FAILED step PATH: hermes-hub-gateway is not on PATH`',
-    '5. Router 只接受純 HTTPS origin；移除 `@url:`、反引號或其他包裝。',
-    '6. 僅執行一次：',
-    `   \`${pairCommand}\``,
+    '請載入 `hermes-hub-gateway-operations` skill，確認已安裝最新版 `@over01470914/hermes-hub-gateway`；需要批准任何操作時直接向我提出請求，取得批准後繼續。接著確認 Gateway CLI 可用並完成配對。',
     '',
-    '回傳規則：',
-    '- 成功：只回傳 8 位配對碼。',
-    '- 已實際執行但失敗：保留第一行 `FAILED step ...`；讀取',
-    '  `hermes-hub-gateway-operations/references/failure-points.md`，',
-    '  再附一行：',
-    '  `PAIRING_DIAGNOSIS [problem_key] layer=<layer> disposition=<disposition>`',
-    '- 失敗後停止，等待新的 pairing request；不要重試、不要顯示 ticket、credential 或任何 secret。',
+    '必要參數：',
+    `- Router URL: \`${router}\``,
+    `- Request ID: \`${record.requestId}\``,
+    `- Enrollment ticket: \`${enrollmentTicket}\``,
   ].join('\n')
 }
 
