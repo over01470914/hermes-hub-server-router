@@ -104,6 +104,10 @@ const chatRunSseKeepAliveMs = 15_000
 // Keep this below the Flutter HTTP client's 30 second request timeout while
 // allowing substantially more time than the generic 10 second Gateway RPC.
 const modelCatalogProxyTimeoutMs = 28_000
+// A cold or busy Hermes transcript read can legitimately exceed the generic
+// Gateway RPC budget. Keep the read below Flutter's 30-second HTTP boundary so
+// a bounded, retryable upstream result reaches the client first.
+const sessionMessagesProxyTimeoutMs = 28_000
 const maxPendingRealtimeFrames = 256
 const maxPendingRealtimeBytes = 1024 * 1024
 const maxDownstreamSseQueueItems = 256
@@ -2832,7 +2836,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const proxied = await proxyViaGateway(
       payload,
       `api/sessions/${sessionId}/messages?offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(limit)}`,
-      { sourceHeaders: request.headers },
+      {
+        sourceHeaders: request.headers,
+        timeoutMs: sessionMessagesProxyTimeoutMs,
+      },
     )
     logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge messages received', {
       ...proxiedLogContext(proxied, undefined, startedAt),

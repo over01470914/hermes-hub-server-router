@@ -73,6 +73,14 @@ function frameByType(
   return socket.sent.filter(frame => frame.type === type)
 }
 
+function isGatewayRpcTimeout(error: unknown): boolean {
+  assert.ok(error instanceof Error)
+  assert.equal(error.message, 'Gateway RPC timeout')
+  assert.equal((error as Error & { statusCode?: unknown }).statusCode, 504)
+  assert.equal((error as Error & { code?: unknown }).code, 'gateway_rpc_timeout')
+  return true
+}
+
 const capableRegistry = new GatewayRegistry()
 const capableSocket = attach(
   capableRegistry,
@@ -87,7 +95,7 @@ await assert.rejects(
     { method: 'GET', path: '/api/sessions' },
     20,
   ),
-  /Gateway RPC timeout/,
+  isGatewayRpcTimeout,
 )
 
 const capableRequests = frameByType(capableSocket, 'rpc_request')
@@ -199,7 +207,7 @@ await assert.rejects(
     { method: 'GET', path: '/api/sessions' },
     20,
   ),
-  /Gateway RPC timeout/,
+  isGatewayRpcTimeout,
 )
 
 assert.equal(frameByType(legacySocket, 'rpc_request').length, 1)

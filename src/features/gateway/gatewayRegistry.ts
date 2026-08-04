@@ -1172,7 +1172,10 @@ export class GatewayRegistry {
             })
           }
         }
-        reject(new Error('Gateway RPC timeout'))
+        reject(Object.assign(new Error('Gateway RPC timeout'), {
+          statusCode: 504,
+          code: 'gateway_rpc_timeout',
+        }))
       }, timeoutMs)
       state.pending.set(id, { resolve, reject, timeout, startedAt })
       state.inFlightRpc = state.pending.size + state.pendingNative.size
