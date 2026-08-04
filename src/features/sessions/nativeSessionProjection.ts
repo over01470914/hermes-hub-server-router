@@ -122,11 +122,12 @@ export function projectNativeSessionListPayload(
       readOnly: false,
       read_only: false,
       created_at: upstream?.created_at || conversation.createdAt,
+      // `conversation.updatedAt` records Router-owned mapping activity (for
+      // example, discovering a session while serving this list).  It is not a
+      // transcript activity timestamp and must never become `last_active`.
       updated_at: newestIsoTimestamp(upstream?.updated_at, conversation.updatedAt) || conversation.updatedAt,
       last_active: activityUnixSeconds(
         upstream?.last_active,
-        upstream?.updated_at,
-        conversation.updatedAt,
       ),
       title: upstream?.title || 'New conversation',
     }]

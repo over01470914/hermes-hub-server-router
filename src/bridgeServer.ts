@@ -149,26 +149,6 @@ interface DebugGatewayConfig {
   expiresAt: number
 }
 
-function isLoopbackHostname(value: string): boolean {
-  const hostname = value.trim().toLowerCase()
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]'
-}
-
-function readDebugPairingCode(): string | null {
-  if (process.env.HERMES_HUB_DEBUG_BUILD !== 'debug-testing') return null
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error('Debug pairing code is unavailable when NODE_ENV=production')
-  }
-  const publicHostname = new URL(routerUrl).hostname
-  if (!isLoopbackHostname(host) || !isLoopbackHostname(publicHostname)) {
-    throw new Error('Debug pairing code requires a loopback Router host and URL')
-  }
-  const pairingCode = process.env.HERMES_HUB_DEBUG_PAIRING_CODE
-  if (!pairingCode) return null
-  if (!/^\d{8}$/.test(pairingCode)) throw new Error('Debug pairing code must be 8 digits')
-  return pairingCode
-}
-
 function readDebugGatewayConfig(): DebugGatewayConfig | null {
   const enabled = process.env.HERMES_HUB_DEBUG_GATEWAY === '1'
   if (!enabled) return null
@@ -176,8 +156,10 @@ function readDebugGatewayConfig(): DebugGatewayConfig | null {
   if (process.env.NODE_ENV === 'production' && !explicitDebugBuild) {
     throw new Error('Debug gateway pairing requires HERMES_HUB_DEBUG_GATEWAY_BUILD=debug-testing when NODE_ENV=production')
   }
-  const pairingCode = process.env.HERMES_HUB_DEBUG_PAIRING_CODE || '00000000'
-  if (!/^\d{8}$/.test(pairingCode)) throw new Error('Debug gateway pairing code must be 8 digits')
+  const pairingCode = process.env.HERMES_HUB_DEBUG_GATEWAY_PAIRING_CODE
+  if (!pairingCode || !/^\d{8}$/.test(pairingCode)) {
+    throw new Error('Debug gateway pairing requires HERMES_HUB_DEBUG_GATEWAY_PAIRING_CODE with 8 digits')
+  }
   const hermesAgentId = process.env.HERMES_HUB_DEBUG_AGENT_ID || 'agent_debug_local'
   const gatewayId = process.env.HERMES_HUB_DEBUG_GATEWAY_ID || 'gw_debug_local'
   if (!/^[A-Za-z0-9._:-]{3,160}$/.test(hermesAgentId)) throw new Error('Debug Hermes Agent id must be 3-160 safe characters')
@@ -243,11 +225,7 @@ const pairingStore = new InMemoryPairingStore(
   loadPairingRecords(pairingStorePath),
   records => savePairingRecords(pairingStorePath, records)
 )
-const debugPairingCode = readDebugPairingCode()
 const debugGateway = readDebugGatewayConfig()
-if (debugPairingCode && debugGateway) {
-  throw new Error('Debug pairing code and debug Gateway modes cannot be enabled together')
-}
 if (debugGateway) pairingStore.ensureDebugGateway(debugGateway)
 const gatewayRegistry = new GatewayRegistry()
 const hermesGateways = new HermesGatewayRepository(gatewayRegistry)
@@ -2069,7 +2047,6 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
         } : {}),
       },
       debugGateway: { enabled: Boolean(debugGateway) },
-      debugPairingCode: { enabled: Boolean(debugPairingCode) },
     })
     return true
   }
@@ -2213,7 +2190,6 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
         gatewayToken: debugGateway.gatewayToken,
       })
       : pairingStore.approve(requestId, {
-        codeGenerator: debugPairingCode ? () => debugPairingCode : undefined,
         hermesAgentId: typeof input.hermesAgentId === 'string' ? input.hermesAgentId : undefined,
         gatewayId: typeof input.gatewayId === 'string' ? input.gatewayId : undefined,
         gatewayToken: typeof input.gatewayToken === 'string' ? input.gatewayToken : undefined,
@@ -2252,7 +2228,6 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
     const enrollmentTicket = headerValue(request, 'x-hermes-hub-gateway-enrollment')
     const requestId = typeof input.requestId === 'string' ? input.requestId : ''
     const approval = pairingStore.enroll(requestId, enrollmentTicket, {
-      codeGenerator: debugPairingCode ? () => debugPairingCode : undefined,
       hermesAgentId: typeof input.hermesAgentId === 'string' ? input.hermesAgentId : undefined,
       gatewayId: typeof input.gatewayId === 'string' ? input.gatewayId : undefined,
       gatewayToken: typeof input.gatewayToken === 'string' ? input.gatewayToken : undefined,

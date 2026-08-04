@@ -2,7 +2,6 @@
 
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { randomInt } from 'node:crypto'
 import { once } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -18,7 +17,6 @@ import {
   loadRouterEnvFile,
   preflightRouterStart,
   routerListenerPid,
-  setDebugPairingCode,
   stopRouterProcess,
 } from './router-local-env.mjs'
 
@@ -148,23 +146,6 @@ try {
   assert.equal(loaded.PRESERVED, 'yes')
   assert.equal(loaded.HERMES_HUB_AGENT_APPROVAL_TOKEN, 'c'.repeat(64))
   assert.equal(readFileSync(envFile, 'utf8').includes('b'.repeat(64)), false)
-
-  const debugPairingCode = String(randomInt(100000000)).padStart(8, '0')
-  const debugPairing = setDebugPairingCode(envFile, debugPairingCode, routerOptions)
-  assert.equal(debugPairing.path, envFile)
-  const debugEnvironment = readFileSync(envFile, 'utf8')
-  assert.equal(debugEnvironment.includes('HERMES_HUB_ROUTER_HOST=127.0.0.1'), true)
-  assert.equal(debugEnvironment.includes('HERMES_HUB_ROUTER_URL=http://127.0.0.1:4320'), true)
-  assert.equal(debugEnvironment.includes('HERMES_HUB_DEBUG_BUILD=debug-testing'), true)
-  assert.equal(debugEnvironment.includes(`HERMES_HUB_DEBUG_PAIRING_CODE=${debugPairingCode}`), true)
-  assert.equal(
-    loadRouterEnvFile(envFile, {}, routerOptions).HERMES_HUB_AGENT_APPROVAL_TOKEN,
-    'c'.repeat(64),
-  )
-  assert.throws(
-    () => setDebugPairingCode(envFile, 'invalid', routerOptions),
-    /exactly 8 digits/,
-  )
 
   const legacyPairingConfigPath = join(workdir, 'legacy-hermes-home', 'hermes-hub', 'pairing.json')
   writeFileSync(envFile, `UNCHANGED=value\nHERMES_HUB_AGENT_APPROVAL_TOKEN=${'d'.repeat(64)}\n`, 'utf8')
@@ -490,7 +471,6 @@ try {
       'invalid existing approval tokens fail closed instead of rotating silently',
       'non-file environment targets fail closed before reading',
       'CLI initialization, rotation, and clearing never print token values',
-      'debug pairing configuration is explicit, loopback-only, and retains the private approval token',
       'the local Gateway launcher withholds the Router token from its verified installer child and rejects remote Router URLs or untrusted package mirrors',
        'startup preflight distinguishes legacy and Gateway-only Router listeners',
        'startup preflight accepts an available configured port',

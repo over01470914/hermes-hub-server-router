@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { randomInt } from 'node:crypto'
 import { once } from 'node:events'
 import { readFile, stat } from 'node:fs/promises'
 import { createServer } from 'node:net'
@@ -139,7 +138,6 @@ const workdir = await mkdtemp(join(tmpdir(), 'hermes-hub-pairing-security-'))
 const pairingStorePath = join(workdir, 'state', 'pairing-store.json')
 const localApprovalConfigPath = join(workdir, 'hermes-home', 'hermes-hub', 'pairing.json')
 const baseUrl = `http://127.0.0.1:${port}`
-const debugPairingCode = String(randomInt(100000000)).padStart(8, '0')
 const routerEnvironment: NodeJS.ProcessEnv = {
   ...process.env,
   NODE_ENV: 'development',
@@ -147,9 +145,7 @@ const routerEnvironment: NodeJS.ProcessEnv = {
   HERMES_HUB_ROUTER_PORT: String(port),
   HERMES_HUB_ROUTER_URL: baseUrl,
   HERMES_HUB_BRIDGE_SECRET: 'pairing-security-smoke-bridge-secret',
-  HERMES_HUB_PAIRING_CODE: '00000000',
-  HERMES_HUB_DEBUG_BUILD: 'debug-testing',
-  HERMES_HUB_DEBUG_PAIRING_CODE: debugPairingCode,
+  HERMES_HUB_PAIRING_CODE: '12345678',
   HERMES_HUB_AGENT_APPROVAL_TOKEN: 'pairing-security-smoke-approval-' + 'x'.repeat(32),
   HERMES_HUB_LOCAL_PAIRING_CONFIG_PATH: localApprovalConfigPath,
   HERMES_HUB_PAIRING_STORE_PATH: pairingStorePath,
@@ -164,12 +160,11 @@ try {
 
   const health = await fetch(`${baseUrl}/router/health`)
   assert.equal(health.status, 200)
-  const healthPayload = await health.json() as { debugPairingCode?: { enabled?: boolean } }
-  assert.equal(healthPayload.debugPairingCode?.enabled, true)
-  assert.equal(JSON.stringify(healthPayload).includes(debugPairingCode), false)
+  const healthPayload = await health.json() as { debugPairingCode?: unknown }
+  assert.equal('debugPairingCode' in healthPayload, false)
 
   const browserBridgeToken = issueBridgeToken({
-    pairingCode: '00000000',
+    pairingCode: '12345678',
     user: 'browser-realtime-smoke',
     deviceId: 'browser-realtime-smoke-device',
     hermesAgentId: 'browser-realtime-smoke-agent',
@@ -260,7 +255,7 @@ try {
   })
   assert.equal(enrollmentResponse.status, 200)
   const enrollment = await enrollmentResponse.json() as { randomCode?: string; gatewayToken?: string }
-  assert.equal(enrollment.randomCode, debugPairingCode)
+  assert.match(enrollment.randomCode || '', /^\d{8}$/)
   assert.equal(enrollment.gatewayToken, undefined)
 
   const gatewayStatus = await fetch(`${baseUrl}/router/pairing/${encodeURIComponent(enrollmentRequest.requestId)}/gateway-status`, {
@@ -291,7 +286,7 @@ try {
   const missingRequestId = await fetch(`${baseUrl}/router/pairing/claim`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ code: '00000000' }),
+    body: JSON.stringify({ code: '12345678' }),
   })
   assert.equal(missingRequestId.status, 400)
   assert.equal((await missingRequestId.json() as { code?: string }).code, 'pairing_request_id_required')
@@ -300,14 +295,14 @@ try {
     const response = await fetch(`${baseUrl}/router/pairing/claim`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ requestId: `pair_missing_${attempt}`, code: '00000000' }),
+      body: JSON.stringify({ requestId: `pair_missing_${attempt}`, code: '12345678' }),
     })
     assert.notEqual(response.status, 429)
   }
   const limitedClaim = await fetch(`${baseUrl}/router/pairing/claim`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ requestId: 'pair_missing_limited', code: '00000000' }),
+    body: JSON.stringify({ requestId: 'pair_missing_limited', code: '12345678' }),
   })
   assert.equal(limitedClaim.status, 429)
   assert.ok(Number(limitedClaim.headers.get('retry-after')) > 0)
@@ -344,7 +339,7 @@ try {
       'X-Forwarded-For cannot evade direct TCP peer limits',
       'browser realtime authenticates with a WebSocket subprotocol instead of a token query',
       'remote Gateway enrollment consumes a one-time ticket without receiving the Router approval token',
-      'debug-only loopback pairing issues its configured code without exposing it through health',
+      'Router health exposes no local debug pairing-code state',
       process.platform === 'win32'
         ? 'Router pairing store has a verified private Windows DACL'
         : 'Router pairing store uses verified 0700/0600 POSIX modes',

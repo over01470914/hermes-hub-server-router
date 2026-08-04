@@ -52,13 +52,18 @@ assert.equal(native.profile, 'native-profile')
 assert.equal(native.message_count, 7)
 assert.equal(native.created_at, '2026-07-17T00:30:00.000Z')
 assert.equal(native.updated_at, conversation.updatedAt)
-assert.equal(native.last_active, Math.floor(Date.parse(conversation.updatedAt) / 1000))
+assert.equal(native.last_active, Math.floor(Date.parse('2026-07-17T02:30:00.000Z') / 1000))
 assert.equal(native.native, true)
 assert.equal(native.readOnly, false)
 assert.equal(legacy.id, 'session_legacy_a')
 assert.equal(legacy.native, false)
 assert.equal(legacy.readOnly, true)
 assert.equal(projected.sessions.some(session => session.id === staleConversation.conversationId), false)
+
+const noActivityProjection = projectNativeSessionListPayload({
+  sessions: [{ id: 'session_native_a', title: 'No upstream activity' }],
+}, [conversation]) as { sessions: Array<Record<string, unknown>> }
+assert.equal(noActivityProjection.sessions[0].last_active, undefined)
 
 const nativeDetail = projectNativeSessionDetailPayload({
   data: {
@@ -86,7 +91,7 @@ console.log(JSON.stringify({
   checks: [
     'native conversation identity remains stable',
     'Hermes session metadata is preserved',
-    'newest ISO and Unix activity timestamps win',
+    'only upstream transcript activity timestamps populate last_active',
     'stale persisted conversation mappings are not projected',
     'legacy sessions remain read-only',
     'detail responses use the same native and legacy identity policy',

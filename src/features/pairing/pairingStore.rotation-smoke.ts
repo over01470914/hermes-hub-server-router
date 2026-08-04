@@ -153,6 +153,33 @@ const secondClaim = store.claim(secondRequestId, secondApproval.randomCode)
 assert.equal(secondClaim.credentialRotated, false)
 assert.deepEqual(secondClaim.revokedGatewayIds, [])
 
+const repeatedDeviceRequestId = request('device_first')
+const repeatedDeviceApproval = store.approve(repeatedDeviceRequestId, {
+  codeGenerator: () => '12121212',
+  hermesAgentId,
+  gatewayId: originalGatewayId,
+  gatewayToken: originalToken,
+})
+store.claim(repeatedDeviceRequestId, repeatedDeviceApproval.randomCode)
+assert.equal(
+  persisted.filter(record => (
+    record.hermesAgentId === hermesAgentId && record.deviceId === 'device_first'
+  )).length,
+  1,
+  'a repeated pairing from one device must overwrite its earlier claimed record',
+)
+assert.equal(
+  persisted.find(record => record.deviceId === 'device_first')?.requestId,
+  repeatedDeviceRequestId,
+  'the retained record must be the latest successful pairing for that device',
+)
+assert.ok(
+  persisted.some(record => (
+    record.requestId === secondRequestId && record.deviceId === 'device_second'
+  )),
+  'pairing one device must preserve another device pairing record',
+)
+
 const enrolledRequestId = request('device_enrollment_conflict')
 const enrolledRecord = persisted.find(item => item.requestId === enrolledRequestId)
 assert.ok(enrolledRecord)
@@ -304,6 +331,7 @@ console.log(JSON.stringify({
   checks: [
     'first-time credentials remain provisional until claim',
     'same active Gateway credential supports another device pairing',
+    'same-device re-pair overwrites only that device pairing record',
     'consumed enrollment tickets return a stable 409 conflict',
     'rotation atomically promotes the candidate and revokes the old credential',
     'active and revoked states survive Router restart',

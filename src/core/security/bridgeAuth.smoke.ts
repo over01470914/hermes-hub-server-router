@@ -34,6 +34,25 @@ assert.equal(
   'a default bridge token must remain valid without an expiry',
 )
 
+const secondDeviceToken = issueBridgeToken(
+  {
+    ...input,
+    deviceId: 'bridge-auth-smoke-second-device',
+  },
+  permanentConfig,
+  2_000,
+  'bridge_auth_second_device',
+)
+assert.equal(
+  verifyBridgeToken(permanentToken, permanentConfig, 2_001).deviceId,
+  input.deviceId,
+  'issuing a token for a new Hub Client must not invalidate an existing device token',
+)
+assert.equal(
+  verifyBridgeToken(secondDeviceToken, permanentConfig, 2_001).deviceId,
+  'bridge-auth-smoke-second-device',
+)
+
 const expiringConfig = readBridgeConfig({
   ...baseEnvironment,
   HERMES_HUB_TOKEN_TTL_SECONDS: '60',
@@ -50,6 +69,7 @@ console.log(JSON.stringify({
   ok: true,
   checks: [
     'default bridge tokens do not expire',
+    'issuing a token for another device preserves existing device tokens',
     'configured positive bridge token TTLs still expire',
     'browser WebSocket auth extracts one bearer subprotocol without using a URL query',
   ],

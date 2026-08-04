@@ -672,6 +672,16 @@ export class InMemoryPairingStore {
     const claim = buildClaim(now, false)
     validate?.(claim, gatewayId)
     const before = [...this.records.entries()].map(([id, item]) => [id, cloneRecord(item)] as const)
+    for (const [requestId, item] of this.records) {
+      if (
+        requestId !== record.requestId &&
+        item.claimedAt &&
+        item.hermesAgentId === hermesAgentId &&
+        item.deviceId === record.deviceId
+      ) {
+        this.records.delete(requestId)
+      }
+    }
     for (const item of this.records.values()) {
       if (item.hermesAgentId !== hermesAgentId || !credentialKey(item)) continue
       if (credentialKey(item) === recordKey) {
