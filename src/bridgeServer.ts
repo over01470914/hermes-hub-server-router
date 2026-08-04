@@ -1739,6 +1739,11 @@ async function handleNativeSessionMessage(
     ? input.reasoningEffort.trim().toLowerCase()
     : undefined
   const fast = typeof input.fast === 'boolean' ? input.fast : undefined
+  const presentation = input.presentation === undefined
+    ? undefined
+    : input.presentation === 'command'
+      ? 'command'
+      : null
   const attachmentIds = Array.isArray(input.attachmentIds)
     ? input.attachmentIds
     : []
@@ -1770,6 +1775,12 @@ async function handleNativeSessionMessage(
     (input.fast !== undefined && typeof input.fast !== 'boolean')
   ) {
     throw Object.assign(new Error('session runtime controls are invalid'), { code: 'validation_error', statusCode: 400 })
+  }
+  if (
+    presentation === null ||
+    (presentation === 'command' && !text.trimStart().startsWith('/'))
+  ) {
+    throw Object.assign(new Error('session presentation is invalid'), { code: 'validation_error', statusCode: 400 })
   }
 
   const begun = nativeConversationStore.beginSubmission(
@@ -1813,6 +1824,10 @@ async function handleNativeSessionMessage(
         ...(provider ? { provider } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(fast !== undefined ? { fast } : {}),
+        ...(presentation === 'command' && gatewayAdvertisesCapability(
+          payload.hermesAgentId,
+          'session.command-presentation',
+        ) ? { presentation } : {}),
         attachmentIds,
       },
       10_000,
@@ -2605,6 +2620,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           runtimeControls: gatewayAdvertisesCapability(
             payload.hermesAgentId,
             'session.runtime-controls',
+          ),
+          commandPresentation: gatewayAdvertisesCapability(
+            payload.hermesAgentId,
+            'session.command-presentation',
           ),
         },
         notifications: {

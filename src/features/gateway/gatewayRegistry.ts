@@ -62,6 +62,7 @@ export interface GatewaySessionSubmit {
   provider?: string
   reasoningEffort?: string
   fast?: boolean
+  presentation?: 'command'
   attachmentIds?: string[]
 }
 
@@ -1214,6 +1215,9 @@ export class GatewayRegistry {
     payload: GatewaySessionSubmit,
     timeoutMs = 10_000,
   ): Promise<GatewayNativeAck> {
+    const supportsCommandPresentation = this.gatewayForAgent(
+      hermesAgentId,
+    )?.capabilities?.includes('session.command-presentation') === true
     return this.nativeRequestByAgentId(
       hermesAgentId,
       'session_submit',
@@ -1227,6 +1231,9 @@ export class GatewayRegistry {
         ...(payload.provider ? { provider: payload.provider } : {}),
         ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
         ...(payload.fast !== undefined ? { fast: payload.fast } : {}),
+        ...(payload.presentation === 'command' && supportsCommandPresentation
+          ? { presentation: payload.presentation }
+          : {}),
         ...(payload.attachmentIds?.length ? { attachmentIds: payload.attachmentIds } : {}),
       },
       { submissionId: payload.submissionId },

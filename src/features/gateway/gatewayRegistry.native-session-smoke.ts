@@ -24,7 +24,11 @@ class FakeGatewaySocket extends EventEmitter {
     this.emit('message', Buffer.from(JSON.stringify(frame)))
   }
 
-  hello(gatewayId: string, hermesAgentId: string): void {
+  hello(
+    gatewayId: string,
+    hermesAgentId: string,
+    commandPresentation = true,
+  ): void {
     this.receive({
       type: 'hello',
       gatewayId,
@@ -36,6 +40,7 @@ class FakeGatewaySocket extends EventEmitter {
         'health',
         'sessions',
         'session.message',
+        ...(commandPresentation ? ['session.command-presentation'] : []),
         'session.model-selection',
         'session.runtime-controls',
         'session.prompt-response',
@@ -45,7 +50,12 @@ class FakeGatewaySocket extends EventEmitter {
   }
 }
 
-function attach(registry: GatewayRegistry, agentId: string, gatewayId: string): FakeGatewaySocket {
+function attach(
+  registry: GatewayRegistry,
+  agentId: string,
+  gatewayId: string,
+  commandPresentation = true,
+): FakeGatewaySocket {
   const socket = new FakeGatewaySocket()
   registry.attach(socket as unknown as WebSocket, {
     gatewayId,
@@ -55,7 +65,7 @@ function attach(registry: GatewayRegistry, agentId: string, gatewayId: string): 
     user: 'smoke',
     deviceName: gatewayId,
   })
-  socket.hello(gatewayId, agentId)
+  socket.hello(gatewayId, agentId, commandPresentation)
   return socket
 }
 
@@ -76,11 +86,12 @@ const submission = registry.submitSessionByAgentId('agent_native_a', {
   laneId: 'lane_aaaaaaaa',
   submissionId: 'sub_aaaaaaaa',
   deviceId: 'device_a',
-  text: 'body visible only on the wire',
+  text: '/usage',
   model: 'gpt-5.6-terra',
   provider: 'openai-codex',
   reasoningEffort: 'high',
   fast: false,
+  presentation: 'command',
 })
 const sent = socketA.sent.find(frame => frame.type === 'session_submit')
 assert.ok(sent)
@@ -90,6 +101,7 @@ assert.equal(sent.model, 'gpt-5.6-terra')
 assert.equal(sent.provider, 'openai-codex')
 assert.equal(sent.reasoningEffort, 'high')
 assert.equal(sent.fast, false)
+assert.equal(sent.presentation, 'command')
 
 socketA.receive({
   type: 'session_event',
@@ -197,6 +209,33 @@ socketA.receive({
 const acknowledged = await submission
 assert.equal(acknowledged.sessionId, 'session_native_a')
 
+const legacySocket = attach(
+  registry,
+  'agent_native_legacy',
+  'gw_native_legacy',
+  false,
+)
+const legacySubmission = registry.submitSessionByAgentId('agent_native_legacy', {
+  laneId: 'lane_legacy01',
+  submissionId: 'sub_legacy001',
+  deviceId: 'device_legacy',
+  text: '/usage',
+  presentation: 'command',
+})
+const legacySent = legacySocket.sent.find(frame => frame.type === 'session_submit')
+assert.ok(legacySent)
+assert.equal(legacySent.presentation, undefined)
+legacySocket.receive({
+  type: 'session_submit_ack',
+  id: legacySent.id,
+  requestType: 'session_submit',
+  accepted: true,
+  laneId: 'lane_legacy01',
+  submissionId: 'sub_legacy001',
+  sessionId: 'session_legacy01',
+})
+await legacySubmission
+
 const runtimePromise = registry.requestRuntimeSnapshotByAgentId('agent_native_a', {
   sessionId: 'session_native_a',
 })
@@ -250,6 +289,7 @@ console.log(JSON.stringify({
     'transient assistant live input preserves the Gateway connection',
     'Desktop session info reaches the typed Flutter consumer through the Router allowlist',
     'native acknowledgement returns the Hermes session id',
+    'command presentation is forwarded only to a capable Gateway',
     'versioned runtime snapshots are requested separately, cached, and redacted by the Router',
     'Gateway disconnect produces an ambiguous result and no retry',
   ],
