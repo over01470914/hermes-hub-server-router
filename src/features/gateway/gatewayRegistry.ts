@@ -1107,7 +1107,7 @@ export class GatewayRegistry {
 
   async heartbeatByAgentId(
     hermesAgentId?: string,
-    timeoutMs = 3_000,
+    timeoutMs = 6_000,
   ): Promise<GatewayHeartbeatResult> {
     const resolvedAgentId = hermesAgentId ||
       [...this.gateways.values()].find(

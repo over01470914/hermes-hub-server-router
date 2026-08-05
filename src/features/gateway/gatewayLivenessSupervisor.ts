@@ -82,7 +82,11 @@ export class GatewayLivenessSupervisor {
 
   probe(
     hermesAgentId: string,
-    timeoutMs = 3_000,
+    // The Sidecar and Plugin share this control frame with an active Hermes
+    // request path. Six seconds preserves fast failure detection without
+    // treating ordinary three-to-five second host scheduling stalls as a
+    // disconnected Gateway.
+    timeoutMs = 6_000,
   ): Promise<GatewayLivenessState> {
     const candidate = this.resolveProbe(hermesAgentId, timeoutMs)
     if (!candidate) {
