@@ -1965,6 +1965,76 @@ async function handleBridgeAttachmentUpload(
   return true
 }
 
+async function handleBridgeOutputArtifact(
+  request: IncomingMessage,
+  response: ServerResponse,
+  payload: BridgeTokenPayload,
+  encodedConversationId: string,
+  artifactId: string,
+): Promise<void> {
+  requireGatewayBoundBridge(payload)
+  if (!/^out_[a-f0-9]{64}$/.test(artifactId)) {
+    sendJson(response, 400, { error: 'Artifact id is invalid', code: 'artifact_id_invalid' })
+    return
+  }
+  const conversationId = decodeURIComponent(encodedConversationId)
+  const sessionId = sessionReadTarget(payload.hermesAgentId, conversationId)
+  const proxied = await proxyViaGateway(payload, '/api/ws', {
+    method: 'POST',
+    body: gatewayRpcBody('artifact.fetch', { sessionId, artifactId }, 20_000),
+    contentType: 'application/json',
+    timeoutMs: 22_000,
+    sourceHeaders: request.headers,
+  })
+  const status = proxiedStatus(proxied)
+  if (status < 200 || status >= 300) {
+    sendJson(response, status, { error: 'Artifact download failed', code: 'artifact_download_failed' })
+    return
+  }
+  const result = jsonPayloadFromProxied(proxied)
+  const artifact = result && typeof result === 'object' && !Array.isArray(result)
+    ? (result as Record<string, unknown>).artifact
+    : undefined
+  if (!artifact || typeof artifact !== 'object' || Array.isArray(artifact)) {
+    throw Object.assign(new Error('Gateway returned an invalid output artifact'), {
+      code: 'invalid_upstream_response',
+      statusCode: 502,
+    })
+  }
+  const record = artifact as Record<string, unknown>
+  if (
+    record.id !== artifactId ||
+    typeof record.label !== 'string' ||
+    record.label.length === 0 ||
+    record.label.length > 255 ||
+    /[\\/\x00]/.test(record.label) ||
+    typeof record.mimeType !== 'string' ||
+    typeof record.sizeBytes !== 'number' ||
+    !Number.isSafeInteger(record.sizeBytes) ||
+    record.sizeBytes <= 0 ||
+    record.sizeBytes > 12 * 1024 * 1024 ||
+    typeof record.dataBase64 !== 'string'
+  ) {
+    throw Object.assign(new Error('Gateway returned an invalid output artifact'), {
+      code: 'invalid_upstream_response',
+      statusCode: 502,
+    })
+  }
+  const encoded = record.dataBase64
+  const expectedEncodedLength = Math.ceil(record.sizeBytes / 3) * 4
+  if (
+    encoded.length > expectedEncodedLength ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded) ||
+    Buffer.from(encoded, 'base64').byteLength !== record.sizeBytes
+  ) {
+    throw Object.assign(new Error('Gateway returned an invalid output artifact'), {
+      code: 'invalid_upstream_response',
+      statusCode: 502,
+    })
+  }
+  sendJson(response, 200, { artifact: record })
+}
+
 async function handleNativePromptResponse(
   request: IncomingMessage,
   response: ServerResponse,
@@ -2609,6 +2679,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           read: false,
           write: gatewayAdvertisesCapability(payload.hermesAgentId, 'attachments.write'),
         },
+        artifacts: {
+          read: gatewayAdvertisesCapability(payload.hermesAgentId, 'artifacts.read'),
+        },
         nativeSession: {
           // These controls are optional enhancements to a native submission.
           // Keep `session.message` usable with the Agent default model when an
@@ -2649,6 +2722,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (await handleCronBridge(request, response, payload, pathname, url)) return
   if (await handleKanbanBridge(request, response, payload, pathname, search)) return
   if (await handleBridgeAttachmentUpload(request, response, payload, pathname)) return
+
+  const outputArtifactMatch = pathname.match(/^\/bridge\/sessions\/([^/]+)\/artifacts\/(out_[a-f0-9]{64})$/)
+  if (outputArtifactMatch && request.method === 'GET') {
+    await handleBridgeOutputArtifact(request, response, payload, outputArtifactMatch[1], outputArtifactMatch[2])
+    return
+  }
 
   if (pathname === '/bridge/bootstrap' && request.method === 'GET') {
     await handleBridgeBootstrap(request, response, payload, url)

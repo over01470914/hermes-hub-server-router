@@ -82,6 +82,7 @@ assert.equal(
   'models.probe',
 )
 assert.equal(requiredGatewayCapability(rpc('model.options', { probe: true })), 'models.probe')
+assert.equal(requiredGatewayCapability(rpc('artifact.fetch', { sessionId: 'session_1' })), 'artifacts.read')
 assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/model/options' }), 'models')
 assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/jobs' }), 'cron')
 assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/jobs/job_1/runs?limit=20' }), 'cron')
