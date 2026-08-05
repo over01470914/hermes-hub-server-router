@@ -543,6 +543,7 @@ const nativeSessionEvents = new Set([
   'usage.updated',
   'gateway.ready',
   'session.info',
+  'session.title',
   'clarify.request',
   'clarify.requested',
   'approval.request',
@@ -608,13 +609,23 @@ function cleanSessionEvent(
     ? value.laneId
     : ''
   const event = isNativeSessionEvent(value.event) ? value.event : ''
-  const data = asRecord(value.data)
+  let data = asRecord(value.data)
   if (!eventId || !laneId || !event || !data) {
     throw new Error('Gateway session event shape is invalid')
   }
   const sessionId = typeof value.sessionId === 'string' && value.sessionId.length <= 256
     ? value.sessionId
     : undefined
+  if (event === 'session.title') {
+    const storedSessionId = typeof data.session_id === 'string' ? data.session_id : ''
+    const title = typeof data.title === 'string'
+      ? data.title.trim().replace(/\s+/g, ' ')
+      : ''
+    if (!sessionId || storedSessionId !== sessionId || !title || title.length > 240) {
+      throw new Error('Gateway session title event shape is invalid')
+    }
+    data = { session_id: storedSessionId, title }
+  }
   const submissionId = typeof value.submissionId === 'string' && /^sub_[A-Za-z0-9._:-]{8,191}$/.test(value.submissionId)
     ? value.submissionId
     : undefined

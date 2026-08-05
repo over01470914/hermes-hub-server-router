@@ -198,6 +198,26 @@ assert.equal(events[5]?.event, 'session.info')
 assert.equal(socketA.readyState, 1)
 
 socketA.receive({
+  type: 'session_event',
+  eventId: 'evt_session_title_aaaaaa',
+  gatewayId: 'gw_native_a',
+  hermesAgentId: 'agent_native_a',
+  laneId: 'lane_aaaaaaaa',
+  sessionId: 'session_native_a',
+  submissionId: 'sub_aaaaaaaa',
+  event: 'session.title',
+  data: { session_id: 'session_native_a', title: 'Obsidian knowledge sync' },
+  sentAt: Date.now(),
+})
+assert.equal(events.length, 7)
+assert.equal(events[6]?.event, 'session.title')
+assert.deepEqual(events[6]?.data, {
+  session_id: 'session_native_a',
+  title: 'Obsidian knowledge sync',
+})
+assert.equal(socketA.readyState, 1)
+
+socketA.receive({
   type: 'session_submit_ack',
   id: sent.id,
   requestType: 'session_submit',
@@ -288,6 +308,7 @@ console.log(JSON.stringify({
     'interim assistant boundaries preserve the Gateway connection',
     'transient assistant live input preserves the Gateway connection',
     'Desktop session info reaches the typed Flutter consumer through the Router allowlist',
+    'session title metadata is identity-checked and bounded by the Router',
     'native acknowledgement returns the Hermes session id',
     'command presentation is forwarded only to a capable Gateway',
     'versioned runtime snapshots are requested separately, cached, and redacted by the Router',
