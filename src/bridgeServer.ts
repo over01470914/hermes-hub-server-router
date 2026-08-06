@@ -66,6 +66,11 @@ import {
 } from './features/cron/cronBridge.js'
 
 const maxGatewayWireBytes = 36 * 1024 * 1024
+// Native submission is an exactly-once boundary: a timeout cannot be retried.
+// Session creation may include slow Agent-side initialization, so keep this
+// window longer than ordinary idempotent reads while still failing promptly on
+// an actual Gateway disconnect.
+const nativeSessionSubmissionTimeoutMs = 30_000
 const routerVersion = (() => {
   try {
     const packagePath = join(
@@ -1843,7 +1848,7 @@ async function handleNativeSessionMessage(
         ) ? { presentation } : {}),
         attachmentIds,
       },
-      10_000,
+      nativeSessionSubmissionTimeoutMs,
     )
     if (!acknowledgement.accepted || !acknowledgement.sessionId) {
       const code = acknowledgement.code || 'native_submission_rejected'
