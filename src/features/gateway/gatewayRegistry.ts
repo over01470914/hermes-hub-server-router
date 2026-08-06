@@ -1,5 +1,5 @@
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { RawData, WebSocket } from 'ws'
 import { elapsedMs, type GatewayRequestMetrics } from '../../core/protocol/bridgeProtocol.js'
 import { logRouter } from '../../core/observability/routerLogger.js'
@@ -211,7 +211,29 @@ interface PendingRpc {
   reject: (error: Error) => void
   timeout: NodeJS.Timeout
   startedAt: number
+  chunked?: {
+    status: number
+    headers: Record<string, string>
+    totalBytes: number
+    chunkCount: number
+    sha256: string
+    nextIndex: number
+    receivedBytes: number
+    chunks: Buffer[]
+  }
 }
+
+export interface GatewayGlobalEvent {
+  eventId: string
+  hermesAgentId: string
+  gatewayId: string
+  event: 'sessions.changed'
+  data: Record<string, unknown>
+  sentAt: number
+}
+
+const maxGatewayRpcResponseBytes = 25 * 1024 * 1024
+const maxGatewayRpcResponseChunks = 128
 
 interface PendingHeartbeat {
   resolve: (result: GatewayLivenessProbeOutcome) => void
@@ -278,6 +300,17 @@ function cleanRpcResponse(value: unknown): GatewayRpcResponse {
   const status = typeof input.status === 'number' && input.status >= 100 && input.status <= 599 ? input.status : 502
   const bodyBase64 = typeof input.bodyBase64 === 'string' ? input.bodyBase64 : ''
   return { status, headers: cleanHeaders(input.headers), bodyBase64 }
+}
+
+function decodeStrictBase64(value: unknown): Buffer {
+  if (typeof value !== 'string' || value.length > Math.ceil(maxGatewayRpcResponseBytes / 3) * 4 + 8) {
+    throw new Error('Gateway RPC response chunk is invalid')
+  }
+  const decoded = Buffer.from(value, 'base64')
+  if (decoded.toString('base64') !== value) {
+    throw new Error('Gateway RPC response chunk is invalid')
+  }
+  return decoded
 }
 
 function safeRuntimeString(value: unknown, maximum = 240): string | undefined {
@@ -644,6 +677,38 @@ function cleanSessionEvent(
   }
 }
 
+function cleanGlobalEvent(
+  value: Record<string, unknown>,
+  state: Pick<TrackedGateway, 'gatewayId' | 'hermesAgentId'>,
+): GatewayGlobalEvent {
+  if (value.gatewayId !== state.gatewayId || value.hermesAgentId !== state.hermesAgentId) {
+    throw new Error('Gateway global event identity mismatch')
+  }
+  const eventId = typeof value.eventId === 'string' && /^evt_[A-Za-z0-9._:-]{8,191}$/.test(value.eventId)
+    ? value.eventId
+    : ''
+  const data = asRecord(value.data)
+  if (!eventId || value.event !== 'sessions.changed' || !data) {
+    throw new Error('Gateway global event shape is invalid')
+  }
+  const profile = typeof data.profile === 'string'
+    ? data.profile.trim()
+    : ''
+  if (profile.length > 160 || /[\u0000-\u001f\u007f]/.test(profile)) {
+    throw new Error('Gateway global event profile is invalid')
+  }
+  return {
+    eventId,
+    gatewayId: state.gatewayId,
+    hermesAgentId: state.hermesAgentId,
+    event: 'sessions.changed',
+    data: profile ? { profile } : {},
+    sentAt: typeof value.sentAt === 'number' && Number.isSafeInteger(value.sentAt)
+      ? value.sentAt
+      : Date.now(),
+  }
+}
+
 function logPath(path: string): string {
   return path.split('?')[0]
 }
@@ -658,6 +723,7 @@ function queryKeys(path: string): string[] {
 export class GatewayRegistry {
   private gateways = new Map<string, TrackedGateway>()
   private sessionEventHandler?: (event: GatewaySessionEvent) => boolean
+  private globalEventHandler?: (event: GatewayGlobalEvent) => void
   private runtimeSnapshotHandler?: (snapshot: GatewayRuntimeSnapshot) => void
   private readonly runtimeSnapshots = new Map<string, GatewayRuntimeSnapshot>()
   private readonly requestTombstones = new GatewayRequestTombstones()
@@ -838,6 +904,10 @@ export class GatewayRegistry {
 
   setSessionEventHandler(handler: (event: GatewaySessionEvent) => boolean): void {
     this.sessionEventHandler = handler
+  }
+
+  setGlobalEventHandler(handler: (event: GatewayGlobalEvent) => void): void {
+    this.globalEventHandler = handler
   }
 
   setRuntimeSnapshotHandler(handler: (snapshot: GatewayRuntimeSnapshot) => void): void {
@@ -1612,6 +1682,119 @@ export class GatewayRegistry {
           classification,
         },
       )
+      return
+    }
+    if (parsed.type === 'rpc_response_start' && typeof parsed.id === 'string') {
+      const pending = state.pending.get(parsed.id)
+      if (!pending) return
+      const status = typeof parsed.status === 'number' && parsed.status >= 100 && parsed.status <= 599
+        ? parsed.status
+        : 502
+      const totalBytes = typeof parsed.totalBytes === 'number' ? parsed.totalBytes : -1
+      const chunkCount = typeof parsed.chunkCount === 'number' ? parsed.chunkCount : -1
+      const sha256 = typeof parsed.sha256 === 'string' ? parsed.sha256 : ''
+      if (
+        !Number.isSafeInteger(totalBytes) || totalBytes < 0 || totalBytes > maxGatewayRpcResponseBytes ||
+        !Number.isSafeInteger(chunkCount) || chunkCount < 1 || chunkCount > maxGatewayRpcResponseChunks ||
+        !/^[a-f0-9]{64}$/.test(sha256)
+      ) {
+        state.pending.delete(parsed.id)
+        state.inFlightRpc = state.pending.size + state.pendingNative.size
+        clearTimeout(pending.timeout)
+        pending.reject(Object.assign(new Error('Gateway RPC response is too large or malformed'), {
+          statusCode: 413,
+          code: 'response_too_large',
+        }))
+        return
+      }
+      pending.chunked = {
+        status,
+        headers: cleanHeaders(parsed.headers),
+        totalBytes,
+        chunkCount,
+        sha256,
+        nextIndex: 0,
+        receivedBytes: 0,
+        chunks: [],
+      }
+      return
+    }
+    if (parsed.type === 'global_event') {
+      try {
+        const event = cleanGlobalEvent(parsed, state)
+        this.globalEventHandler?.(event)
+        logRouter('debug', 'Gateway global event accepted', {
+          hermesAgentId: state.hermesAgentId,
+          gatewayId: state.gatewayId,
+          eventId: event.eventId,
+          event: event.event,
+        })
+      } catch (error) {
+        logRouter('warn', 'Gateway global event rejected', {
+          hermesAgentId: state.hermesAgentId,
+          gatewayId: state.gatewayId,
+          eventId: typeof parsed.eventId === 'string' ? parsed.eventId : undefined,
+          event: typeof parsed.event === 'string' ? parsed.event : undefined,
+        }, error)
+        state.socket?.close(4400, 'invalid global event')
+      }
+      return
+    }
+    if (parsed.type === 'rpc_response_chunk' && typeof parsed.id === 'string') {
+      const pending = state.pending.get(parsed.id)
+      const chunked = pending?.chunked
+      if (!pending || !chunked) return
+      try {
+        if (parsed.index !== chunked.nextIndex) throw new Error('Gateway RPC response chunks are out of order')
+        const chunk = decodeStrictBase64(parsed.bodyBase64)
+        if (chunk.length === 0 || chunked.receivedBytes + chunk.length > chunked.totalBytes) {
+          throw new Error('Gateway RPC response chunk size is invalid')
+        }
+        chunked.chunks.push(chunk)
+        chunked.receivedBytes += chunk.length
+        chunked.nextIndex += 1
+      } catch (error) {
+        state.pending.delete(parsed.id)
+        state.inFlightRpc = state.pending.size + state.pendingNative.size
+        clearTimeout(pending.timeout)
+        pending.reject(error instanceof Error ? error : new Error(String(error)))
+      }
+      return
+    }
+    if (parsed.type === 'rpc_response_end' && typeof parsed.id === 'string') {
+      const pending = state.pending.get(parsed.id)
+      const chunked = pending?.chunked
+      if (!pending || !chunked) return
+      state.pending.delete(parsed.id)
+      state.inFlightRpc = state.pending.size + state.pendingNative.size
+      clearTimeout(pending.timeout)
+      try {
+        if (
+          chunked.nextIndex !== chunked.chunkCount ||
+          chunked.receivedBytes !== chunked.totalBytes ||
+          parsed.sha256 !== chunked.sha256
+        ) throw new Error('Gateway RPC response chunks are incomplete')
+        const body = Buffer.concat(chunked.chunks, chunked.receivedBytes)
+        if (createHash('sha256').update(body).digest('hex') !== chunked.sha256) {
+          throw new Error('Gateway RPC response digest mismatch')
+        }
+        logRouter(chunked.status >= 400 ? 'warn' : 'info', 'Gateway chunked RPC response received', {
+          hermesAgentId: state.hermesAgentId,
+          requestId: parsed.id,
+          status: chunked.status,
+          responseBytes: body.length,
+          chunkCount: chunked.chunkCount,
+          latencyMs: elapsedMs(pending.startedAt),
+        })
+        pending.resolve({
+          status: chunked.status,
+          headers: chunked.headers,
+          bodyBase64: body.toString('base64'),
+          metrics: { requestId: parsed.id, gatewayDispatchMs: elapsedMs(pending.startedAt), totalLatencyMs: elapsedMs(pending.startedAt), via: 'hermes-hub-gateway' },
+        })
+      } catch (error) {
+        pending.reject(error instanceof Error ? error : new Error(String(error)))
+      }
       return
     }
     if (parsed.type === 'rpc_response' && typeof parsed.id === 'string') {

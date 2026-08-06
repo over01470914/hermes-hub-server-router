@@ -141,6 +141,16 @@ assert(
 )
 originHub.reset()
 
+const globalHub = new ClientEventHub({ heartbeatIntervalMs: 60_000 })
+const globalEvent = globalHub.publish({
+  scope: 'global-scope',
+  eventId: 'evt_sessions_changed_global',
+  event: 'sessions.changed',
+  data: {},
+})
+assert(globalEvent.conversation_id == null, 'global event invented a conversation id')
+globalHub.reset()
+
 const tailBuffer = new PendingRealtimeFrameBuffer(3, 64 * 1024)
 for (let index = 1; index <= 5; index += 1) {
   tailBuffer.push({

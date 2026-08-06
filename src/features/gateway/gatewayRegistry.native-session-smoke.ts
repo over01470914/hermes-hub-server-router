@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import type { WebSocket } from 'ws'
-import { GatewayRegistry, type GatewaySessionEvent } from './gatewayRegistry.js'
+import {
+  GatewayRegistry,
+  type GatewayGlobalEvent,
+  type GatewaySessionEvent,
+} from './gatewayRegistry.js'
 
 class FakeGatewaySocket extends EventEmitter {
   readyState = 1
@@ -71,6 +75,7 @@ function attach(
 
 const registry = new GatewayRegistry()
 const events: GatewaySessionEvent[] = []
+const globalEvents: GatewayGlobalEvent[] = []
 const runtimeSnapshots: string[] = []
 registry.setSessionEventHandler(event => {
   events.push(event)
@@ -79,8 +84,30 @@ registry.setSessionEventHandler(event => {
 registry.setRuntimeSnapshotHandler(snapshot => {
   runtimeSnapshots.push(snapshot.eventId)
 })
+registry.setGlobalEventHandler(event => {
+  globalEvents.push(event)
+})
 const socketA = attach(registry, 'agent_native_a', 'gw_native_a')
 attach(registry, 'agent_native_b', 'gw_native_b')
+
+socketA.receive({
+  type: 'global_event',
+  eventId: 'evt_sessions_changed_aaaa',
+  gatewayId: 'gw_native_a',
+  hermesAgentId: 'agent_native_a',
+  event: 'sessions.changed',
+  data: { profile: 'work' },
+  sentAt: Date.now(),
+})
+assert.deepEqual(globalEvents, [{
+  eventId: 'evt_sessions_changed_aaaa',
+  gatewayId: 'gw_native_a',
+  hermesAgentId: 'agent_native_a',
+  event: 'sessions.changed',
+  data: { profile: 'work' },
+  sentAt: globalEvents[0]?.sentAt,
+}])
+assert.equal(socketA.readyState, 1)
 
 const submission = registry.submitSessionByAgentId('agent_native_a', {
   laneId: 'lane_aaaaaaaa',

@@ -24,6 +24,7 @@ export interface PushDeviceRegistration {
   provider: PushProviderName
   platform: PushPlatform
   registrationToken: string
+  trackedConversationIds: string[]
   preferences: PushNotificationPreferences
 }
 
@@ -33,6 +34,7 @@ export interface EncryptedPushDeviceRecord {
   provider: PushProviderName
   platform: PushPlatform
   encryptedRegistrationToken: string
+  trackedConversationIds?: string[]
   preferences?: PushNotificationPreferences
   updatedAt: number
 }
@@ -73,6 +75,7 @@ export class PushDeviceRegistry {
       provider: input.provider,
       platform: input.platform,
       encryptedRegistrationToken: this.encrypt(input.registrationToken),
+      trackedConversationIds: [...input.trackedConversationIds],
       preferences: { ...input.preferences },
       updatedAt: this.now(),
     }
@@ -96,6 +99,9 @@ export class PushDeviceRegistry {
         provider: record.provider,
         platform: record.platform,
         registrationToken: this.decrypt(record.encryptedRegistrationToken),
+        trackedConversationIds: normalizeTrackedConversationIds(
+          record.trackedConversationIds,
+        ),
         preferences: normalizePreferences(record.preferences),
       })
     }
@@ -107,7 +113,12 @@ export class PushDeviceRegistry {
   }
 
   snapshot(): EncryptedPushDeviceRecord[] {
-    return [...this.records.values()].map(record => ({ ...record }))
+    return [...this.records.values()].map(record => ({
+      ...record,
+      ...(record.trackedConversationIds
+        ? { trackedConversationIds: [...record.trackedConversationIds] }
+        : {}),
+    }))
   }
 
   private flush(): void {
@@ -169,6 +180,7 @@ function validateRegistration(input: PushDeviceRegistration): void {
     throw new Error('Push registration token invalid')
   }
   validatePreferences(input.preferences)
+  validateTrackedConversationIds(input.trackedConversationIds)
 }
 
 function validateEncryptedRecord(record: EncryptedPushDeviceRecord): void {
@@ -179,11 +191,39 @@ function validateEncryptedRecord(record: EncryptedPushDeviceRecord): void {
     provider: record.provider,
     platform: record.platform,
     registrationToken: record.encryptedRegistrationToken,
+    trackedConversationIds: normalizeTrackedConversationIds(
+      record.trackedConversationIds,
+    ),
     preferences: normalizePreferences(record.preferences),
   })
   if (!Number.isSafeInteger(record.updatedAt) || record.updatedAt < 0) {
     throw new Error('Push device updatedAt invalid')
   }
+}
+
+function validateTrackedConversationIds(value: unknown): void {
+  if (!Array.isArray(value) || value.length > 500) {
+    throw new Error('Tracked conversation ids invalid')
+  }
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (
+      typeof item !== 'string' ||
+      !item ||
+      item.length > 256 ||
+      /[\u0000-\u001f\u007f]/.test(item) ||
+      seen.has(item)
+    ) {
+      throw new Error('Tracked conversation ids invalid')
+    }
+    seen.add(item)
+  }
+}
+
+export function normalizeTrackedConversationIds(value: unknown): string[] {
+  if (value == null) return []
+  validateTrackedConversationIds(value)
+  return [...value as string[]]
 }
 
 function validatePreferences(value: unknown): void {

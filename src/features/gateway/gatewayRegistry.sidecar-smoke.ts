@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import type { WebSocket } from 'ws'
 import { GatewayRegistry } from './gatewayRegistry.js'
@@ -82,6 +83,38 @@ socket.receive({
 })
 assert.equal(registry.getByAgentId(hermesAgentId)?.agentOnline, true)
 assert.equal(registry.getByAgentId(hermesAgentId)?.routable, true)
+
+const chunkedRpc = registry.requestByAgentId(hermesAgentId, {
+  method: 'GET',
+  path: '/api/sessions/session_chunked/messages',
+})
+const chunkedRequest = socket.sent.find(frame => frame.type === 'rpc_request')
+assert.ok(chunkedRequest)
+const chunkedBody = Buffer.from('chunked response body')
+const chunkedDigest = createHash('sha256').update(chunkedBody).digest('hex')
+socket.receive({
+  type: 'rpc_response_start',
+  id: chunkedRequest.id,
+  status: 200,
+  headers: { 'content-type': 'application/json' },
+  totalBytes: chunkedBody.length,
+  chunkCount: 2,
+  sha256: chunkedDigest,
+})
+socket.receive({
+  type: 'rpc_response_chunk',
+  id: chunkedRequest.id,
+  index: 0,
+  bodyBase64: chunkedBody.subarray(0, 8).toString('base64'),
+})
+socket.receive({
+  type: 'rpc_response_chunk',
+  id: chunkedRequest.id,
+  index: 1,
+  bodyBase64: chunkedBody.subarray(8).toString('base64'),
+})
+socket.receive({ type: 'rpc_response_end', id: chunkedRequest.id, sha256: chunkedDigest })
+assert.equal(Buffer.from((await chunkedRpc).bodyBase64, 'base64').toString(), chunkedBody.toString())
 
 const submission = registry.submitSessionByAgentId(hermesAgentId, {
   laneId: 'lane_sidecar_smoke',

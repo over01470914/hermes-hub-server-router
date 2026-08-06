@@ -6,7 +6,7 @@ export interface BridgeClientEvent {
   version: 2
   cursor: number
   event_id: string
-  conversation_id: string
+  conversation_id?: string
   session_id?: string
   submission_id?: string
   event: string
@@ -205,7 +205,9 @@ export class ClientEventHub {
       version: 2,
       cursor,
       event_id: eventId,
-      conversation_id: input.conversationId || input.sessionId || 'unknown',
+      ...(input.conversationId || input.sessionId
+        ? { conversation_id: input.conversationId || input.sessionId }
+        : {}),
       ...(input.sessionId ? { session_id: input.sessionId } : {}),
       ...(input.submissionId ? { submission_id: input.submissionId } : {}),
       event: input.event || 'legacy.frame',

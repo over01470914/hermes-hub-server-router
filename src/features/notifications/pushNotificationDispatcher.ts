@@ -43,6 +43,7 @@ export class PushNotificationDispatcher {
     let delivered = 0
     let revoked = 0
     for (const registration of registrations) {
+      if (!registration.trackedConversationIds.includes(input.sessionId)) continue
       if (!allowsCategory(registration.preferences, category)) continue
       try {
         const result = await this.provider.send(registration, intent)

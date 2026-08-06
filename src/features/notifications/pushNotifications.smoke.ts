@@ -30,6 +30,7 @@ registry.upsert({
   provider: 'jpush',
   platform: 'android',
   registrationToken: rawToken,
+  trackedConversationIds: ['session_1'],
   preferences: {
     assistantReplies: true,
     promptRequests: true,
@@ -47,6 +48,10 @@ assert.equal(
 assert.equal(
   registry.registrationsForAgent('agent_a')[0]?.preferences.sound,
   false,
+)
+assert.deepEqual(
+  registry.registrationsForAgent('agent_a')[0]?.trackedConversationIds,
+  ['session_1'],
 )
 assert.deepEqual(registry.registrationsForAgent('agent_b'), [])
 
@@ -128,6 +133,15 @@ assert.equal(JSON.stringify(provider.intents).includes('must not be copied'), fa
 
 await dispatcher.dispatch({
   hermesAgentId: 'agent_a',
+  eventId: 'event_untracked',
+  sessionId: 'session_remote_only',
+  event: 'message.created',
+  data: { role: 'assistant' },
+})
+assert.equal(provider.intents.length, 1)
+
+await dispatcher.dispatch({
+  hermesAgentId: 'agent_a',
   eventId: 'event_complete',
   sessionId: 'session_1',
   event: 'message.complete',
@@ -152,6 +166,7 @@ registry.upsert({
   provider: 'jpush',
   platform: 'android',
   registrationToken: rawToken,
+  trackedConversationIds: ['session_1'],
   preferences: {
     assistantReplies: false,
     promptRequests: true,

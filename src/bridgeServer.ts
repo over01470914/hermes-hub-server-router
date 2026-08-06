@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { WebSocketServer } from 'ws'
 import { BoundedSseWriter } from './core/http/boundedSseWriter.js'
 import { routerBasePath, stripRouterBasePath } from './core/http/routerBasePath.js'
@@ -41,6 +41,7 @@ import {
   PushDeviceRegistry,
   PUSH_DEVICE_REGISTRY_SCHEMA_VERSION,
   normalizePreferences,
+  normalizeTrackedConversationIds,
   type EncryptedPushDeviceRecord,
   type PushPlatform,
 } from './features/notifications/pushDeviceRegistry.js'
@@ -64,6 +65,7 @@ import {
   type CronBridgeLogLevel
 } from './features/cron/cronBridge.js'
 
+const maxGatewayWireBytes = 36 * 1024 * 1024
 const routerVersion = (() => {
   try {
     const packagePath = join(
@@ -291,7 +293,9 @@ gatewayRegistry.setSessionEventHandler(event => {
     void pushDispatcher.dispatch({
       hermesAgentId: event.hermesAgentId,
       eventId: event.eventId,
-      sessionId: resolvedSessionId,
+      // Device tracking and notification deep links use the Router-owned
+      // conversation identity, not the rotatable Hermes session id.
+      sessionId: conversation.conversationId,
       event: event.event,
       data: event.data,
     }).catch(error => {
@@ -302,6 +306,15 @@ gatewayRegistry.setSessionEventHandler(event => {
     })
   }
   return true
+})
+
+gatewayRegistry.setGlobalEventHandler(event => {
+  clientEventHub.publish({
+    scope: `hermes-agent:${event.hermesAgentId}`,
+    eventId: event.eventId,
+    event: event.event,
+    data: event.data,
+  })
 })
 
 gatewayRegistry.setRuntimeSnapshotHandler(snapshot => {
@@ -2562,12 +2575,14 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       const provider = input.provider
       const platform = input.platform
       const registrationToken = input.registrationToken
+      const trackedConversationIds = input.trackedConversationIds ?? []
       const preferences = asRecord(input.preferences)
       if (
         provider !== 'jpush' ||
         typeof platform !== 'string' ||
         !['android', 'ios', 'harmony'].includes(platform) ||
         typeof registrationToken !== 'string' ||
+        !Array.isArray(trackedConversationIds) ||
         (input.preferences != null && preferences == null)
       ) {
         throw Object.assign(new Error('Push device registration is invalid'), {
@@ -2582,6 +2597,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           provider,
           platform: platform as PushPlatform,
           registrationToken,
+          trackedConversationIds: normalizeTrackedConversationIds(
+            trackedConversationIds,
+          ),
           preferences: normalizePreferences({
             assistantReplies: booleanSetting(
               preferences?.assistantReplies,
@@ -2665,6 +2683,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       featureCapabilityContractVersion: AGENT_FEATURE_GATEWAY_CONTRACT_VERSION,
       features: {
         sessions: {
+          reconcile: sessionResourcesAvailable,
+          messageCursorPage: sessionResourcesAvailable,
+          changeEvents: gatewayAdvertisesCapability(
+            payload.hermesAgentId,
+            'sessions.change-events',
+          ),
           rename: sessionResourcesAvailable,
           archive: sessionResourcesAvailable,
           delete: sessionResourcesAvailable,
@@ -2697,6 +2721,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           commandPresentation: gatewayAdvertisesCapability(
             payload.hermesAgentId,
             'session.command-presentation',
+          ),
+          runtimeStatus: gatewayAdvertisesCapability(
+            payload.hermesAgentId,
+            'runtime.status',
           ),
         },
         notifications: {
@@ -2761,6 +2789,88 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (pathname === '/bridge/sessions' && request.method === 'POST') {
     sendNativeSessionRequired(response)
+    return
+  }
+
+  if (pathname === '/bridge/sessions/reconcile' && request.method === 'POST') {
+    const input = await readJson(request)
+    const rawItems = Array.isArray(input.items) ? input.items : []
+    if (rawItems.length === 0 || rawItems.length > 100) {
+      sendJson(response, 400, {
+        error: 'Session reconciliation requires between 1 and 100 items',
+        code: 'validation_error',
+      })
+      return
+    }
+    const items = rawItems.map(value => {
+      const item = asRecord(value)
+      const conversationId = typeof item?.conversationId === 'string'
+        ? item.conversationId.trim()
+        : ''
+      const revision = typeof item?.revision === 'string' ? item.revision : undefined
+      if (!conversationId || conversationId.length > 256 || /[\r\n\0]/.test(conversationId)) {
+        throw Object.assign(new Error('Session reconciliation item is invalid'), {
+          statusCode: 400,
+          code: 'validation_error',
+        })
+      }
+      return { conversationId, revision }
+    })
+    const results = new Array<Record<string, unknown>>(items.length)
+    let nextIndex = 0
+    const worker = async (): Promise<void> => {
+      while (nextIndex < items.length) {
+        const index = nextIndex++
+        const item = items[index]
+        const target = encodeURIComponent(sessionReadTarget(payload.hermesAgentId, item.conversationId))
+        try {
+          const proxied = await proxyViaGateway(payload, `api/sessions/${target}`, {
+            sourceHeaders: request.headers,
+            timeoutMs: 6_000,
+          })
+          const status = proxiedStatus(proxied)
+          if (status === 404) {
+            results[index] = { conversationId: item.conversationId, state: 'deleted' }
+            continue
+          }
+          if (status < 200 || status >= 300) {
+            results[index] = {
+              conversationId: item.conversationId,
+              state: 'error',
+              status,
+            }
+            continue
+          }
+          const conversation = nativeConversationStore.getByConversationId(
+            payload.hermesAgentId,
+            item.conversationId,
+          )
+          const projected = projectNativeSessionDetailPayload(
+            sessionMetadataStore.applyToPayload(
+              payload.hermesAgentId,
+              jsonPayloadFromProxied(proxied),
+            ),
+            conversation,
+          )
+          const revision = createHash('sha256')
+            .update(JSON.stringify(projected))
+            .digest('hex')
+          results[index] = revision === item.revision
+            ? { conversationId: item.conversationId, state: 'unchanged', revision }
+            : { conversationId: item.conversationId, state: 'changed', revision, preview: projected }
+        } catch (error) {
+          results[index] = {
+            conversationId: item.conversationId,
+            state: 'error',
+            code: error instanceof Error && 'code' in error
+              ? String((error as Error & { code?: unknown }).code || 'reconcile_failed')
+              : 'reconcile_failed',
+          }
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, items.length) }, () => worker()))
+    sendJson(response, 200, { items: results, checkedAt: Date.now() })
     return
   }
 
@@ -2923,8 +3033,30 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (sessionActionMatch && request.method === 'GET' && sessionActionMatch[2] === 'messages') {
     const clientSessionId = decodeURIComponent(sessionActionMatch[1])
     const sessionId = encodeURIComponent(sessionReadTarget(payload.hermesAgentId, clientSessionId))
-    const offset = url.searchParams.get('offset') || '0'
-    const limit = url.searchParams.get('limit') || '150'
+    const cursorPage = url.searchParams.get('cursorPage') === '1'
+    let offset = url.searchParams.get('offset') || '0'
+    const parsedLimit = Number(url.searchParams.get('limit') || (cursorPage ? 20 : 150))
+    if (!Number.isSafeInteger(parsedLimit) || parsedLimit < 1) {
+      sendJson(response, 400, { error: 'Message limit is invalid', code: 'validation_error' })
+      return
+    }
+    const requestedLimit = cursorPage ? Math.min(50, parsedLimit) : parsedLimit
+    if (cursorPage) {
+      const cursor = url.searchParams.get('cursor') || ''
+      if (cursor) {
+        try {
+          const decoded = Buffer.from(cursor, 'base64url').toString('utf8')
+          if (!/^\d{1,10}$/.test(decoded)) throw new Error('invalid cursor')
+          offset = decoded
+        } catch {
+          sendJson(response, 400, { error: 'Message cursor is invalid', code: 'validation_error' })
+          return
+        }
+      } else {
+        offset = '0'
+      }
+    }
+    const limit = String(cursorPage ? requestedLimit + 1 : requestedLimit)
     const startedAt = Date.now()
     logRouter('info', 'Bridge messages receive requested', {
       sessionId: decodeURIComponent(sessionActionMatch[1]),
@@ -2945,7 +3077,37 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       offset,
       limit
     })
-    sendGatewayResponse(response, proxied.response)
+    if (!cursorPage || proxiedStatus(proxied) < 200 || proxiedStatus(proxied) >= 300) {
+      sendGatewayResponse(response, proxied.response)
+      return
+    }
+    const payloadJson = asRecord(jsonPayloadFromProxied(proxied))
+    const sourceRows = Array.isArray(payloadJson?.messages)
+      ? payloadJson.messages
+      : Array.isArray(payloadJson?.data)
+        ? payloadJson.data
+        : []
+    const items: unknown[] = []
+    let projectedBytes = 2
+    for (const item of sourceRows.slice(0, requestedLimit)) {
+      const bytes = Buffer.byteLength(JSON.stringify(item), 'utf8') + 1
+      if (items.length > 0 && projectedBytes + bytes > 512 * 1024) break
+      items.push(item)
+      projectedBytes += bytes
+    }
+    const numericOffset = Number(offset)
+    const hasMoreOlder = sourceRows.length > items.length
+    const revision = createHash('sha256').update(JSON.stringify(items)).digest('hex')
+    const knownRevision = url.searchParams.get('revision') || ''
+    sendJson(response, 200, {
+      items: knownRevision === revision ? [] : items,
+      olderCursor: hasMoreOlder
+        ? Buffer.from(String(numericOffset + items.length), 'utf8').toString('base64url')
+        : null,
+      hasMoreOlder,
+      transcriptRevision: revision,
+      notModified: knownRevision === revision,
+    })
     return
   }
 
@@ -3073,7 +3235,10 @@ const server = createServer((request, response) => {
   })
 })
 
-const gatewayWss = new WebSocketServer({ noServer: true })
+// Explicitly match the mixed-version Sidecar ceiling. New Gateways chunk
+// large RPC responses, but older deployed Plugins can still send one bounded
+// 25 MiB body with Base64 overhead.
+const gatewayWss = new WebSocketServer({ noServer: true, maxPayload: maxGatewayWireBytes })
 const clientEventsWss = new WebSocketServer({ noServer: true })
 server.on('upgrade', (request, socket, head) => {
   const { pathname, url } = getPath(request)
