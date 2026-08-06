@@ -245,6 +245,28 @@ assert.deepEqual(events[6]?.data, {
 assert.equal(socketA.readyState, 1)
 
 socketA.receive({
+  type: 'session_event',
+  eventId: 'evt_continuation_aaaaaaaa',
+  gatewayId: 'gw_native_a',
+  hermesAgentId: 'agent_native_a',
+  laneId: 'lane_aaaaaaaa',
+  sessionId: 'session_native_continuation',
+  submissionId: 'sub_aaaaaaaa',
+  event: 'session.info',
+  data: {
+    stored_session_id: 'session_native_continuation',
+    previous_stored_session_id: 'session_native_a',
+  },
+  sentAt: Date.now(),
+})
+assert.equal(events.length, 8)
+assert.deepEqual(events[7]?.data, {
+  stored_session_id: 'session_native_continuation',
+  previous_stored_session_id: 'session_native_a',
+})
+assert.equal(socketA.readyState, 1)
+
+socketA.receive({
   type: 'session_submit_ack',
   id: sent.id,
   requestType: 'session_submit',

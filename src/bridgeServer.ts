@@ -52,6 +52,7 @@ import { PendingRealtimeFrameBuffer } from './features/realtime/pendingRealtimeF
 import { SessionMetadataStore } from './features/sessions/sessionMetadataStore.js'
 import { NativeConversationStore } from './features/sessions/nativeConversationStore.js'
 import { projectNativeSessionDetailPayload, projectNativeSessionListPayload } from './features/sessions/nativeSessionProjection.js'
+import { nativeSessionLineagesFromPayload } from './features/sessions/sessionLineage.js'
 import {
   KanbanBridgeRequestError,
   normalizeKanbanBridgeError,
@@ -261,15 +262,32 @@ const pushDispatcher = pushDeviceRegistry && jpushProvider.configured
   : null
 
 gatewayRegistry.setSessionEventHandler(event => {
+  const submission = event.submissionId
+    ? nativeConversationStore.getSubmission(event.hermesAgentId, event.submissionId)
+    : undefined
+  if (event.submissionId && (!submission || submission.laneId !== event.laneId)) return false
+  const previousSessionId = event.event === 'session.info'
+    && typeof event.data.previous_stored_session_id === 'string'
+    ? event.data.previous_stored_session_id
+    : undefined
   const conversation = nativeConversationStore.acceptSessionEvent(
     event.hermesAgentId,
     event.laneId,
     event.sessionId,
+    previousSessionId,
   )
   if (!conversation) return false
-  if (event.submissionId) {
-    const submission = nativeConversationStore.getSubmission(event.hermesAgentId, event.submissionId)
-    if (!submission || submission.laneId !== event.laneId) return false
+  // A continuation adoption is monotonic for one Router lane.  Consume a
+  // delayed parent event without publishing it or moving the conversation's
+  // canonical read target back to the ended SessionDB row.
+  if (event.sessionId && conversation.sessionId !== event.sessionId) return true
+  if (event.event === 'session.info' && submission && conversation.sessionId) {
+    nativeConversationStore.updateSubmission(
+      event.hermesAgentId,
+      submission.submissionId,
+      submission.state,
+      { sessionId: conversation.sessionId },
+    )
   }
   if (event.event === 'prompt.requested') {
     const promptId = typeof event.data.promptId === 'string' ? event.data.promptId : ''
@@ -284,7 +302,7 @@ gatewayRegistry.setSessionEventHandler(event => {
     if (promptId) nativeConversationStore.resolvePrompt(event.hermesAgentId, promptId)
   }
   const resolvedSessionId =
-    event.sessionId || conversation.sessionId || conversation.conversationId
+    conversation.sessionId || event.sessionId || conversation.conversationId
   clientEventHub.publish({
     scope: `hermes-agent:${event.hermesAgentId}`,
     eventId: event.eventId,
@@ -335,6 +353,7 @@ gatewayRegistry.setRuntimeSnapshotHandler(snapshot => {
     )
     : nativeConversationStore.getBySessionId(snapshot.hermesAgentId, snapshot.sessionId)
   if (!conversation) return
+  if (conversation.sessionId !== snapshot.sessionId) return
   clientEventHub.publish({
     scope: `hermes-agent:${snapshot.hermesAgentId}`,
     eventId: snapshot.eventId,
@@ -630,13 +649,46 @@ function applySessionMetadataToBody(hermesAgentId: string, body: Buffer): Buffer
 function projectSessionList(hermesAgentId: string, body: Buffer): Buffer {
   const payload = parseJsonBuffer(body)
   if (!payload) return body
-  const conversations = nativeConversationStore.ensureForSessions(
-    hermesAgentId,
-    sessionIdsFromListPayload(payload),
-  )
+  const lineages = nativeSessionLineagesFromPayload(payload)
+  const conversations = lineages.length > 0
+    ? nativeConversationStore.reconcileSessionLineages(hermesAgentId, lineages)
+    : nativeConversationStore.ensureForSessions(
+        hermesAgentId,
+        sessionIdsFromListPayload(payload),
+      )
   return Buffer.from(JSON.stringify(
     projectNativeSessionListPayload(payload, conversations),
   ), 'utf8')
+}
+
+async function reconcileLegacySessionDirectory(
+  payload: BridgeTokenPayload,
+  sourceHeaders: IncomingMessage['headers'],
+): Promise<void> {
+  if (!nativeConversationStore.needsLegacyLineageReconciliation(payload.hermesAgentId)) return
+  try {
+    const proxied = await proxyViaGateway(payload, 'api/sessions?limit=200', {
+      sourceHeaders,
+      timeoutMs: 6_000,
+    })
+    const status = proxiedStatus(proxied)
+    if (status < 200 || status >= 300) return
+    const directory = jsonPayloadFromProxied(proxied)
+    const record = asRecord(directory)
+    if (!record || (!Array.isArray(record.sessions) && !Array.isArray(record.data))) return
+    nativeConversationStore.reconcileSessionLineages(
+      payload.hermesAgentId,
+      nativeSessionLineagesFromPayload(directory),
+    )
+    nativeConversationStore.markLegacyLineageReconciled(payload.hermesAgentId)
+  } catch (error) {
+    // Legacy migration is best-effort and retryable. Never turn a bounded
+    // canonical detail reconciliation into a failure because the one-time
+    // directory classification was temporarily unavailable.
+    logRouter('warn', 'Legacy session lineage reconciliation deferred', {
+      hermesAgentId: payload.hermesAgentId,
+    }, error)
+  }
 }
 
 function sendGatewaySessionResponse(
@@ -2074,7 +2126,13 @@ async function handleNativePromptResponse(
     throw Object.assign(new Error('response is required'), { code: 'validation_error', statusCode: 400 })
   }
   const requestedConversationId = typeof input.conversationId === 'string' ? input.conversationId.trim() : ''
-  if (requestedConversationId && requestedConversationId !== pending.conversationId) {
+  const requestedConversation = requestedConversationId
+    ? nativeConversationStore.getByConversationId(payload.hermesAgentId, requestedConversationId)
+    : undefined
+  if (
+    requestedConversationId
+    && requestedConversation?.conversationId !== pending.conversationId
+  ) {
     throw Object.assign(new Error('Prompt conversation does not match'), {
       code: 'prompt_scope_mismatch',
       statusCode: 409,
@@ -2821,12 +2879,22 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       }
       return { conversationId, revision }
     })
+    await reconcileLegacySessionDirectory(payload, request.headers)
     const results = new Array<Record<string, unknown>>(items.length)
     let nextIndex = 0
     const worker = async (): Promise<void> => {
       while (nextIndex < items.length) {
         const index = nextIndex++
         const item = items[index]
+        const conversation = nativeConversationStore.getByConversationId(
+          payload.hermesAgentId,
+          item.conversationId,
+        )
+        const canonicalConversationId = conversation?.conversationId || item.conversationId
+        const identity = {
+          requestedConversationId: item.conversationId,
+          conversationId: canonicalConversationId,
+        }
         const target = encodeURIComponent(sessionReadTarget(payload.hermesAgentId, item.conversationId))
         try {
           const proxied = await proxyViaGateway(payload, `api/sessions/${target}`, {
@@ -2835,21 +2903,17 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           })
           const status = proxiedStatus(proxied)
           if (status === 404) {
-            results[index] = { conversationId: item.conversationId, state: 'deleted' }
+            results[index] = { ...identity, state: 'deleted' }
             continue
           }
           if (status < 200 || status >= 300) {
             results[index] = {
-              conversationId: item.conversationId,
+              ...identity,
               state: 'error',
               status,
             }
             continue
           }
-          const conversation = nativeConversationStore.getByConversationId(
-            payload.hermesAgentId,
-            item.conversationId,
-          )
           const projected = projectNativeSessionDetailPayload(
             sessionMetadataStore.applyToPayload(
               payload.hermesAgentId,
@@ -2861,11 +2925,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
             .update(JSON.stringify(projected))
             .digest('hex')
           results[index] = revision === item.revision
-            ? { conversationId: item.conversationId, state: 'unchanged', revision }
-            : { conversationId: item.conversationId, state: 'changed', revision, preview: projected }
+              && canonicalConversationId === item.conversationId
+            ? { ...identity, state: 'unchanged', revision }
+            : { ...identity, state: 'changed', revision, preview: projected }
         } catch (error) {
           results[index] = {
-            conversationId: item.conversationId,
+            ...identity,
             state: 'error',
             code: error instanceof Error && 'code' in error
               ? String((error as Error & { code?: unknown }).code || 'reconcile_failed')

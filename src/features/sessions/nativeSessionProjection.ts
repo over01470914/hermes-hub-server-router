@@ -105,31 +105,59 @@ export function projectNativeSessionListPayload(
   }
 
   const nativeSessionIds = new Set(
-    nativeConversations.flatMap(conversation => conversation.sessionId ? [conversation.sessionId] : []),
+    nativeConversations.flatMap(conversation => [
+      ...(conversation.sessionId ? [conversation.sessionId] : []),
+      ...(conversation.lineageSessionIds || []),
+    ]),
   )
   const nativeRows = nativeConversations.flatMap(conversation => {
     if (!conversation.sessionId) return []
-    const upstream = upstreamBySessionId.get(conversation.sessionId)
+    const tip = upstreamBySessionId.get(conversation.sessionId)
+    const root = conversation.lineageRootSessionId
+      ? upstreamBySessionId.get(conversation.lineageRootSessionId)
+      : undefined
+    const upstream = tip
+      || root
+      || (conversation.lineageSessionIds || []).flatMap(sessionId => {
+        const row = upstreamBySessionId.get(sessionId)
+        return row ? [row] : []
+      })[0]
     if (!upstream) return []
+    const tipSource = typeof tip?.source === 'string' ? tip.source.toLowerCase() : ''
+    const visibleTitle = tipSource === 'tui'
+      ? tip?.title || root?.title || upstream.title
+      : root?.title || upstream.title || tip?.title
+    const visibleSource = root?.source || upstream.source || tip?.source || 'hermes_hub_gateway'
+    const createdAt = root?.created_at
+      || root?.started_at
+      || upstream.created_at
+      || upstream.started_at
+      || conversation.createdAt
+    const updatedAt = newestIsoTimestamp(tip?.updated_at, upstream.updated_at)
+      || (typeof tip?.updated_at === 'string' ? tip.updated_at : undefined)
+      || conversation.createdAt
     return [{
-      ...(upstream || {}),
+      ...(root || {}),
+      ...upstream,
+      ...(tip || {}),
       id: conversation.conversationId,
       session_id: conversation.conversationId,
       conversation_id: conversation.conversationId,
       hermes_session_id: conversation.sessionId,
-      source: upstream?.source || 'hermes_hub_gateway',
+      source: visibleSource,
       native: true,
       readOnly: false,
       read_only: false,
-      created_at: upstream?.created_at || conversation.createdAt,
+      created_at: createdAt,
       // `conversation.updatedAt` records Router-owned mapping activity (for
       // example, discovering a session while serving this list).  It is not a
       // transcript activity timestamp and must never become `last_active`.
-      updated_at: newestIsoTimestamp(upstream?.updated_at, conversation.updatedAt) || conversation.updatedAt,
+      updated_at: updatedAt,
       last_active: activityUnixSeconds(
-        upstream?.last_active,
+        tip?.last_active,
+        upstream.last_active,
       ),
-      title: upstream?.title || 'New conversation',
+      title: visibleTitle || 'New conversation',
     }]
   })
   const legacyRows = sourceRows.flatMap(value => {

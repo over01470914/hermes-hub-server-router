@@ -51,7 +51,7 @@ assert.equal(native.model, 'native-model')
 assert.equal(native.profile, 'native-profile')
 assert.equal(native.message_count, 7)
 assert.equal(native.created_at, '2026-07-17T00:30:00.000Z')
-assert.equal(native.updated_at, conversation.updatedAt)
+assert.equal(native.updated_at, '2026-07-17T02:00:00.000Z')
 assert.equal(native.last_active, Math.floor(Date.parse('2026-07-17T02:30:00.000Z') / 1000))
 assert.equal(native.native, true)
 assert.equal(native.readOnly, false)
@@ -64,6 +64,56 @@ const noActivityProjection = projectNativeSessionListPayload({
   sessions: [{ id: 'session_native_a', title: 'No upstream activity' }],
 }, [conversation]) as { sessions: Array<Record<string, unknown>> }
 assert.equal(noActivityProjection.sessions[0].last_active, undefined)
+
+const lineageConversation: NativeConversationRecord = {
+  ...conversation,
+  conversationId: 'conv_lineage_aaaaaaaa',
+  laneId: 'lane_lineage_aaaaaaaa',
+  sessionId: 'session_lineage_tip',
+  lineageRootSessionId: 'session_lineage_root',
+  lineageSessionIds: [
+    'session_lineage_root',
+    'session_lineage_middle',
+    'session_lineage_tip',
+  ],
+  lineagePathSessionIds: [
+    'session_lineage_root',
+    'session_lineage_middle',
+    'session_lineage_tip',
+  ],
+}
+const lineageProjection = projectNativeSessionListPayload({ sessions: [
+  {
+    id: 'session_lineage_root',
+    title: 'Original lineage title',
+    source: 'cli',
+    created_at: '2026-07-16T01:00:00.000Z',
+    last_active: Date.parse('2026-07-16T02:00:00.000Z'),
+  },
+  {
+    id: 'session_lineage_middle',
+    title: 'Hidden middle segment',
+    source: 'cli',
+  },
+  {
+    id: 'session_lineage_tip',
+    title: 'Continuation title',
+    source: 'cli',
+    preview: 'Newest continuation preview',
+    updated_at: '2026-07-17T04:00:00.000Z',
+    last_active: Date.parse('2026-07-17T04:30:00.000Z'),
+  },
+] }, [lineageConversation]) as { sessions: Array<Record<string, unknown>> }
+assert.equal(lineageProjection.sessions.length, 1)
+assert.equal(lineageProjection.sessions[0].id, lineageConversation.conversationId)
+assert.equal(lineageProjection.sessions[0].hermes_session_id, 'session_lineage_tip')
+assert.equal(lineageProjection.sessions[0].title, 'Original lineage title')
+assert.equal(lineageProjection.sessions[0].created_at, '2026-07-16T01:00:00.000Z')
+assert.equal(lineageProjection.sessions[0].preview, 'Newest continuation preview')
+assert.equal(
+  lineageProjection.sessions[0].last_active,
+  Math.floor(Date.parse('2026-07-17T04:30:00.000Z') / 1000),
+)
 
 const nativeDetail = projectNativeSessionDetailPayload({
   data: {
@@ -92,6 +142,7 @@ console.log(JSON.stringify({
     'native conversation identity remains stable',
     'Hermes session metadata is preserved',
     'only upstream transcript activity timestamps populate last_active',
+    'lineage rows preserve root identity and tip activity without duplicate segments',
     'stale persisted conversation mappings are not projected',
     'legacy sessions remain read-only',
     'detail responses use the same native and legacy identity policy',

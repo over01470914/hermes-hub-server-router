@@ -80,6 +80,7 @@ const SERVER_FILES = [
   'src/features/sessions/sessionMetadataStore.ts',
   'src/features/sessions/nativeConversationStore.ts',
   'src/features/sessions/nativeSessionProjection.ts',
+  'src/features/sessions/sessionLineage.ts',
 ]
 const MANAGED_ENV_KEYS = new Set([
   'NODE_ENV',

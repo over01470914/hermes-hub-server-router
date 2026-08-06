@@ -658,6 +658,28 @@ function cleanSessionEvent(
       throw new Error('Gateway session title event shape is invalid')
     }
     data = { session_id: storedSessionId, title }
+  } else if (event === 'session.info') {
+    const storedSessionId = typeof data.stored_session_id === 'string'
+      ? data.stored_session_id
+      : ''
+    const previousStoredSessionId = typeof data.previous_stored_session_id === 'string'
+      ? data.previous_stored_session_id
+      : ''
+    if (previousStoredSessionId) {
+      if (
+        !sessionId
+        || storedSessionId !== sessionId
+        || !/^[A-Za-z0-9._:-]{3,200}$/.test(previousStoredSessionId)
+        || previousStoredSessionId === storedSessionId
+      ) {
+        throw new Error('Gateway session continuation event shape is invalid')
+      }
+      data = {
+        ...data,
+        stored_session_id: storedSessionId,
+        previous_stored_session_id: previousStoredSessionId,
+      }
+    }
   }
   const submissionId = typeof value.submissionId === 'string' && /^sub_[A-Za-z0-9._:-]{8,191}$/.test(value.submissionId)
     ? value.submissionId
