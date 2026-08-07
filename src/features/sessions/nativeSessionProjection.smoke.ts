@@ -55,6 +55,7 @@ assert.equal(native.updated_at, '2026-07-17T02:00:00.000Z')
 assert.equal(native.last_active, Math.floor(Date.parse('2026-07-17T02:30:00.000Z') / 1000))
 assert.equal(native.native, true)
 assert.equal(native.readOnly, false)
+assert.deepEqual(native.topology, { relation: 'root', childCount: 0 })
 assert.equal(legacy.id, 'session_legacy_a')
 assert.equal(legacy.native, false)
 assert.equal(legacy.readOnly, true)
@@ -115,6 +116,36 @@ assert.equal(
   Math.floor(Date.parse('2026-07-17T04:30:00.000Z') / 1000),
 )
 
+const parentConversation: NativeConversationRecord = {
+  ...conversation,
+  conversationId: 'conv_branch_parent',
+  laneId: 'lane_branch_parent',
+  sessionId: 'session_branch_parent',
+}
+const branchConversation: NativeConversationRecord = {
+  ...conversation,
+  conversationId: 'conv_branch_child',
+  laneId: 'lane_branch_child',
+  sessionId: 'session_branch_child',
+}
+const branchProjection = projectNativeSessionListPayload({ sessions: [
+  { id: 'session_branch_parent', title: 'Parent' },
+  {
+    id: 'session_branch_child',
+    title: 'Branch',
+    parent_session_id: 'session_branch_parent',
+  },
+] }, [parentConversation, branchConversation]) as { sessions: Array<Record<string, unknown>> }
+assert.deepEqual(branchProjection.sessions[0].topology, {
+  relation: 'root',
+  childCount: 1,
+})
+assert.deepEqual(branchProjection.sessions[1].topology, {
+  relation: 'branch',
+  parentConversationId: 'conv_branch_parent',
+  childCount: 0,
+})
+
 const nativeDetail = projectNativeSessionDetailPayload({
   data: {
     id: 'session_native_a',
@@ -143,6 +174,7 @@ console.log(JSON.stringify({
     'Hermes session metadata is preserved',
     'only upstream transcript activity timestamps populate last_active',
     'lineage rows preserve root identity and tip activity without duplicate segments',
+    'visible branch rows reference stable Router conversation ids',
     'stale persisted conversation mappings are not projected',
     'legacy sessions remain read-only',
     'detail responses use the same native and legacy identity policy',

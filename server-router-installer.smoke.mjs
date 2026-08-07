@@ -302,10 +302,20 @@ try {
   const installedPackage = JSON.parse(await readFile(join(workdir, 'package.json'), 'utf8'))
   assert.equal(installedPackage.scripts?.['router:dev'], 'tsx src/bridgeServer.ts')
   assert.equal(installedPackage.scripts?.['server-router:dev'], undefined)
+  assert.equal(installedPackage.pnpm, undefined)
+  assert.equal(
+    await readFile(join(workdir, 'pnpm-workspace.yaml'), 'utf8'),
+    "packages:\n  - '.'\nallowBuilds:\n  esbuild: true\n",
+  )
   assert.ok(source.requests.has('/gateway/gateway-release-metadata.json'))
   assert.ok(!source.requests.has('/router/gateway-release-metadata.json'))
   const installedEnvironment = environmentFrom(envFile)
   assert.equal(installedEnvironment.HERMES_HUB_GATEWAY_RELEASE_METADATA_PATH, deployedMetadataPath)
+  assert.equal(
+    installedEnvironment.HERMES_HUB_SESSION_DIRECTORY_CACHE_STORE_PATH,
+    join(workdir, 'state', 'session-directory-cache.json'),
+  )
+  await access(join(workdir, 'src', 'features', 'sessions', 'sessionDirectoryCacheStore.ts'))
 
   router = await startRouter(workdir, installedEnvironment)
   const validHealth = await waitForHealth(baseUrl, router)

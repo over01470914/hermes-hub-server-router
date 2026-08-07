@@ -16,6 +16,15 @@ function sessionIdOf(session: JsonRecord): string {
   return ''
 }
 
+function firstString(record: JsonRecord | undefined, keys: string[]): string | undefined {
+  if (!record) return undefined
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return undefined
+}
+
 function newestIsoTimestamp(...values: unknown[]): string | undefined {
   const timestamps = values
     .filter((value): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value)))
@@ -104,6 +113,46 @@ export function projectNativeSessionListPayload(
     if (sessionId) upstreamBySessionId.set(sessionId, session)
   }
 
+  const conversationBySessionId = new Map<string, NativeConversationRecord>()
+  for (const conversation of nativeConversations) {
+    for (const sessionId of [
+      ...(conversation.sessionId ? [conversation.sessionId] : []),
+      ...(conversation.lineageSessionIds || []),
+    ]) conversationBySessionId.set(sessionId, conversation)
+  }
+  const topologyByConversationId = new Map<string, JsonRecord>()
+  const childCountByConversationId = new Map<string, number>()
+  for (const conversation of nativeConversations) {
+    const rootRow = conversation.lineageRootSessionId
+      ? upstreamBySessionId.get(conversation.lineageRootSessionId)
+      : undefined
+    const tipRow = conversation.sessionId
+      ? upstreamBySessionId.get(conversation.sessionId)
+      : undefined
+    const representative = rootRow
+      || (conversation.lineageSessionIds || []).flatMap(sessionId => {
+        const row = upstreamBySessionId.get(sessionId)
+        return row ? [row] : []
+      })[0]
+      || tipRow
+    const parentSessionId = firstString(representative, ['parent_session_id', 'parentSessionId'])
+    const parentConversation = parentSessionId
+      ? conversationBySessionId.get(parentSessionId)
+      : undefined
+    if (!parentConversation || parentConversation.conversationId === conversation.conversationId) continue
+    const relation = firstString(representative, ['session_source', 'sessionSource'])?.toLowerCase() === 'fork'
+      ? 'fork'
+      : 'branch'
+    topologyByConversationId.set(conversation.conversationId, {
+      relation,
+      parentConversationId: parentConversation.conversationId,
+    })
+    childCountByConversationId.set(
+      parentConversation.conversationId,
+      (childCountByConversationId.get(parentConversation.conversationId) || 0) + 1,
+    )
+  }
+
   const nativeSessionIds = new Set(
     nativeConversations.flatMap(conversation => [
       ...(conversation.sessionId ? [conversation.sessionId] : []),
@@ -158,6 +207,10 @@ export function projectNativeSessionListPayload(
         upstream.last_active,
       ),
       title: visibleTitle || 'New conversation',
+      topology: {
+        ...(topologyByConversationId.get(conversation.conversationId) || { relation: 'root' }),
+        childCount: childCountByConversationId.get(conversation.conversationId) || 0,
+      },
     }]
   })
   const legacyRows = sourceRows.flatMap(value => {

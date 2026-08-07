@@ -80,6 +80,7 @@ const SERVER_FILES = [
   'src/features/sessions/sessionMetadataStore.ts',
   'src/features/sessions/nativeConversationStore.ts',
   'src/features/sessions/nativeSessionProjection.ts',
+  'src/features/sessions/sessionDirectoryCacheStore.ts',
   'src/features/sessions/sessionLineage.ts',
 ]
 const MANAGED_ENV_KEYS = new Set([
@@ -91,6 +92,7 @@ const MANAGED_ENV_KEYS = new Set([
   'HERMES_HUB_PAIRING_STORE_PATH',
   'HERMES_HUB_SESSION_METADATA_STORE_PATH',
   'HERMES_HUB_NATIVE_CONVERSATION_STORE_PATH',
+  'HERMES_HUB_SESSION_DIRECTORY_CACHE_STORE_PATH',
   'HERMES_HUB_PUSH_DEVICE_STORE_PATH',
   'HERMES_HUB_GATEWAY_RELEASE_METADATA_PATH',
 ])
@@ -391,6 +393,17 @@ async function downloadRuntime(baseUrl, workdir, dryRun) {
       typescript: '^5.7.3',
     },
   }, null, 2) + '\n')
+  // pnpm 11 moved build-script policy out of package.json and into the
+  // workspace settings file. tsx requires esbuild's platform binary install;
+  // keep the generated runtime allowlist exact instead of approving all
+  // dependency lifecycle scripts.
+  writeFile(join(workdir, 'pnpm-workspace.yaml'), [
+    'packages:',
+    "  - '.'",
+    'allowBuilds:',
+    '  esbuild: true',
+    '',
+  ].join('\n'))
   writeFile(join(workdir, 'tsconfig.server.json'), JSON.stringify({
     compilerOptions: {
       target: 'ES2022',
@@ -634,6 +647,7 @@ function updateEnvFile(path, config, dryRun) {
     `HERMES_HUB_PAIRING_STORE_PATH=${join(config.workdir, 'state', 'pairing-store.json')}`,
     `HERMES_HUB_SESSION_METADATA_STORE_PATH=${join(config.workdir, 'state', 'session-metadata.json')}`,
     `HERMES_HUB_NATIVE_CONVERSATION_STORE_PATH=${join(config.workdir, 'state', 'native-conversations.json')}`,
+    `HERMES_HUB_SESSION_DIRECTORY_CACHE_STORE_PATH=${join(config.workdir, 'state', 'session-directory-cache.json')}`,
     `HERMES_HUB_PUSH_DEVICE_STORE_PATH=${join(config.workdir, 'state', 'push-devices.json')}`,
     `HERMES_HUB_GATEWAY_RELEASE_METADATA_PATH=${config.gatewayReleaseMetadataPath}`,
   )

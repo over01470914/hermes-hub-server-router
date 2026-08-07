@@ -10,18 +10,21 @@ const resolved = resolveRouterStatePaths(routerModuleUrl, {})
 assert.equal(resolved.routerRoot, routerRoot)
 assert.equal(resolved.pairingStorePath, join(routerRoot, '.hermes-hub-private', 'pairing-store.json'))
 assert.equal(resolved.sessionMetadataStorePath, join(routerRoot, '.hermes-hub-private', 'session-metadata.json'))
+assert.equal(resolved.sessionDirectoryCacheStorePath, join(routerRoot, '.hermes-hub-private', 'session-directory-cache.json'))
 assert.equal(resolved.pushDeviceStorePath, join(routerRoot, '.hermes-hub-private', 'push-devices.json'))
 assert.equal(resolved.diagnosticsDir, join(routerRoot, 'diagnostics'))
 
 const overridden = resolveRouterStatePaths(routerModuleUrl, {
   HERMES_HUB_PAIRING_STORE_PATH: '/private/pairing.json',
   HERMES_HUB_SESSION_METADATA_STORE_PATH: '/private/sessions.json',
+  HERMES_HUB_SESSION_DIRECTORY_CACHE_STORE_PATH: '/private/session-directory.json',
   HERMES_HUB_PUSH_DEVICE_STORE_PATH: '/private/push-devices.json',
   HERMES_HUB_DIAGNOSTICS_DIR: '/private/diagnostics',
 })
 
 assert.equal(overridden.pairingStorePath, '/private/pairing.json')
 assert.equal(overridden.sessionMetadataStorePath, '/private/sessions.json')
+assert.equal(overridden.sessionDirectoryCacheStorePath, '/private/session-directory.json')
 assert.equal(overridden.pushDeviceStorePath, '/private/push-devices.json')
 assert.equal(overridden.diagnosticsDir, '/private/diagnostics')
 

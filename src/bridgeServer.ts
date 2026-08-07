@@ -51,6 +51,7 @@ import { PushNotificationDispatcher } from './features/notifications/pushNotific
 import { PendingRealtimeFrameBuffer } from './features/realtime/pendingRealtimeFrames.js'
 import { SessionMetadataStore } from './features/sessions/sessionMetadataStore.js'
 import { NativeConversationStore } from './features/sessions/nativeConversationStore.js'
+import { SessionDirectoryCacheStore } from './features/sessions/sessionDirectoryCacheStore.js'
 import { projectNativeSessionDetailPayload, projectNativeSessionListPayload } from './features/sessions/nativeSessionProjection.js'
 import { nativeSessionLineagesFromPayload } from './features/sessions/sessionLineage.js'
 import {
@@ -99,6 +100,7 @@ const {
   pairingStorePath,
   sessionMetadataStorePath,
   nativeConversationStorePath,
+  sessionDirectoryCacheStorePath,
   pushDeviceStorePath,
 } = resolveRouterStatePaths(import.meta.url)
 const agentApprovalToken = process.env.HERMES_HUB_AGENT_APPROVAL_TOKEN || ''
@@ -116,6 +118,12 @@ const modelCatalogProxyTimeoutMs = 28_000
 // Gateway RPC budget. Keep the read below Flutter's 30-second HTTP boundary so
 // a bounded, retryable upstream result reaches the client first.
 const sessionMessagesProxyTimeoutMs = 28_000
+const configuredSessionDirectoryCacheTtlMs = Number(
+  process.env.HERMES_HUB_SESSION_DIRECTORY_CACHE_TTL_MS || 30_000,
+)
+const sessionDirectoryCacheTtlMs = Number.isFinite(configuredSessionDirectoryCacheTtlMs)
+  ? Math.min(5 * 60_000, Math.max(1_000, configuredSessionDirectoryCacheTtlMs))
+  : 30_000
 const maxPendingRealtimeFrames = 256
 const maxPendingRealtimeBytes = 1024 * 1024
 const maxDownstreamSseQueueItems = 256
@@ -244,6 +252,7 @@ const hermesGateways = new HermesGatewayRepository(gatewayRegistry)
 const clientEventHub = new ClientEventHub()
 const sessionMetadataStore = new SessionMetadataStore(sessionMetadataStorePath)
 const nativeConversationStore = new NativeConversationStore(nativeConversationStorePath)
+const sessionDirectoryCacheStore = new SessionDirectoryCacheStore(sessionDirectoryCacheStorePath)
 const pushStorageSecret = process.env.HERMES_HUB_PUSH_STORAGE_KEY || ''
 const pushDeviceRegistry = pushStorageSecret.length >= 32
   ? new PushDeviceRegistry(
@@ -289,6 +298,9 @@ gatewayRegistry.setSessionEventHandler(event => {
       { sessionId: conversation.sessionId },
     )
   }
+  if (event.event === 'session.info' && previousSessionId) {
+    sessionDirectoryCacheStore.invalidateAgent(event.hermesAgentId)
+  }
   if (event.event === 'prompt.requested') {
     const promptId = typeof event.data.promptId === 'string' ? event.data.promptId : ''
     if (!nativeConversationStore.registerPrompt(
@@ -332,6 +344,9 @@ gatewayRegistry.setSessionEventHandler(event => {
 })
 
 gatewayRegistry.setGlobalEventHandler(event => {
+  if (event.event === 'sessions.changed') {
+    sessionDirectoryCacheStore.invalidateAgent(event.hermesAgentId)
+  }
   clientEventHub.publish({
     scope: `hermes-agent:${event.hermesAgentId}`,
     eventId: event.eventId,
@@ -661,24 +676,102 @@ function projectSessionList(hermesAgentId: string, body: Buffer): Buffer {
   ), 'utf8')
 }
 
+function canonicalSessionDirectoryQuery(search: string): {
+  cacheKey: string
+  forceRefresh: boolean
+  upstreamSearch: string
+} {
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search)
+  const forceRefresh = params.get('refresh') === '1' || params.get('refresh') === 'true'
+  params.delete('refresh')
+  const sorted = [...params.entries()]
+    .filter(([key, value]) => key.length <= 64 && value.length <= 256)
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) => (
+      leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue)
+    ))
+  const canonical = new URLSearchParams(sorted).toString()
+  return {
+    cacheKey: canonical || '_',
+    forceRefresh,
+    upstreamSearch: canonical ? `?${canonical}` : '',
+  }
+}
+
+function isFreshSessionDirectoryEntry(refreshedAt: string): boolean {
+  const refreshedAtMs = Date.parse(refreshedAt)
+  return Number.isFinite(refreshedAtMs)
+    && Date.now() - refreshedAtMs <= sessionDirectoryCacheTtlMs
+}
+
+function canUseStaleSessionDirectoryFallback(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500
+}
+
+function projectedGatewaySessionListPayload(
+  rpc: GatewayRpcResponse,
+  hermesAgentId: string,
+): unknown {
+  const withMetadata = applySessionMetadataToBody(
+    hermesAgentId,
+    Buffer.from(rpc.bodyBase64 || '', 'base64'),
+  )
+  return parseJsonBuffer(projectSessionList(hermesAgentId, withMetadata))
+}
+
+function sessionDirectoryPayloadWithCacheMetadata(
+  payload: unknown,
+  entry: ReturnType<SessionDirectoryCacheStore['put']>,
+): unknown {
+  const record = asRecord(payload)
+  if (!record || !entry) return payload
+  const cachedResponse = sessionDirectoryCacheStore.response(entry, 'refreshed')
+  return { ...record, cache: cachedResponse.cache }
+}
+
 async function reconcileLegacySessionDirectory(
   payload: BridgeTokenPayload,
   sourceHeaders: IncomingMessage['headers'],
 ): Promise<void> {
   if (!nativeConversationStore.needsLegacyLineageReconciliation(payload.hermesAgentId)) return
   try {
-    const proxied = await proxyViaGateway(payload, 'api/sessions?limit=200', {
-      sourceHeaders,
-      timeoutMs: 6_000,
-    })
-    const status = proxiedStatus(proxied)
-    if (status < 200 || status >= 300) return
-    const directory = jsonPayloadFromProxied(proxied)
-    const record = asRecord(directory)
-    if (!record || (!Array.isArray(record.sessions) && !Array.isArray(record.data))) return
+    const rows: unknown[] = []
+    const pageLimit = 200
+    const maxPages = 10
+    let completed = false
+    for (let page = 0; page < maxPages; page += 1) {
+      const offset = page * pageLimit
+      const proxied = await proxyViaGateway(
+        payload,
+        `api/sessions?limit=${pageLimit}&offset=${offset}&include_children=1`,
+        { sourceHeaders, timeoutMs: 6_000 },
+      )
+      const status = proxiedStatus(proxied)
+      if (status < 200 || status >= 300) return
+      const directory = jsonPayloadFromProxied(proxied)
+      const record = asRecord(directory)
+      const pageRows = Array.isArray(record?.sessions)
+        ? record.sessions
+        : Array.isArray(record?.data)
+          ? record.data
+          : undefined
+      if (!pageRows) return
+      rows.push(...pageRows)
+      if (record?.has_more !== true && record?.hasMore !== true) {
+        completed = true
+        break
+      }
+      if (pageRows.length === 0) return
+    }
+    if (!completed) {
+      logRouter('warn', 'Legacy session lineage reconciliation remains incomplete', {
+        hermesAgentId: payload.hermesAgentId,
+        indexedSessionCount: rows.length,
+      })
+      return
+    }
     nativeConversationStore.reconcileSessionLineages(
       payload.hermesAgentId,
-      nativeSessionLineagesFromPayload(directory),
+      nativeSessionLineagesFromPayload({ sessions: rows }),
     )
     nativeConversationStore.markLegacyLineageReconciled(payload.hermesAgentId)
   } catch (error) {
@@ -701,18 +794,6 @@ function sendGatewaySessionResponse(
     Buffer.from(rpc.bodyBase64 || '', 'base64'),
   )
   sendBuffer(response, rpc.status, jsonHeaders(rpc.headers), body)
-}
-
-function sendGatewaySessionListResponse(
-  response: ServerResponse,
-  rpc: GatewayRpcResponse,
-  hermesAgentId: string,
-): void {
-  const withMetadata = applySessionMetadataToBody(
-    hermesAgentId,
-    Buffer.from(rpc.bodyBase64 || '', 'base64'),
-  )
-  sendBuffer(response, rpc.status, jsonHeaders(rpc.headers), projectSessionList(hermesAgentId, withMetadata))
 }
 
 function sessionReadTarget(hermesAgentId: string, clientSessionId: string): string {
@@ -1495,6 +1576,7 @@ async function handleBridgeDeleteSession(
     sessionId: clientSessionId
   })
   if (proxiedStatus(proxied) >= 200 && proxiedStatus(proxied) < 300) {
+    sessionDirectoryCacheStore.invalidateAgent(payload.hermesAgentId)
     try {
       sessionMetadataStore.delete(payload.hermesAgentId, clientSessionId)
     } catch (error) {
@@ -1565,6 +1647,7 @@ async function handleBridgeRenameSession(
     sessionId: clientSessionId,
   })
   if (status >= 200 && status < 300) {
+    sessionDirectoryCacheStore.invalidateAgent(payload.hermesAgentId)
     const conversation = nativeConversationStore.getByConversationId(payload.hermesAgentId, clientSessionId)
     const responsePayload = conversation
       ? projectNativeSessionMutationPayload(jsonPayloadFromProxied(proxied), clientSessionId, hermesSessionId)
@@ -1638,6 +1721,7 @@ async function handleBridgeForkSession(
     sourceSessionId
   })
   if (status >= 200 && status < 300) {
+    sessionDirectoryCacheStore.invalidateAgent(payload.hermesAgentId)
     const normalized = normalizeForkSessionPayload(jsonPayloadFromProxied(proxied), profile)
     const forkedSessionId = sessionIdFromBody(Buffer.from(JSON.stringify(normalized), 'utf8'))
     if (forkedSessionId) {
@@ -1687,6 +1771,9 @@ async function handleBridgeArchiveSession(
     sessionId: clientSessionId,
     archived
   })
+  if (proxiedStatus(proxied) >= 200 && proxiedStatus(proxied) < 300) {
+    sessionDirectoryCacheStore.invalidateAgent(payload.hermesAgentId)
+  }
   sendGatewayResponse(response, proxied.response)
 }
 
@@ -2843,10 +2930,68 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (pathname === '/bridge/sessions' && request.method === 'GET') {
     const startedAt = Date.now()
-    logRouter('info', 'Bridge sessions list requested', { queryKeys: queryKeys(search) })
-    const proxied = await proxyViaGateway(payload, `api/sessions${search}`, { sourceHeaders: request.headers })
-    logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge sessions list received', proxiedLogContext(proxied, undefined, startedAt))
-    sendGatewaySessionListResponse(response, proxied.response, payload.hermesAgentId)
+    const directoryQuery = canonicalSessionDirectoryQuery(search)
+    const cached = sessionDirectoryCacheStore.get(
+      payload.hermesAgentId,
+      directoryQuery.cacheKey,
+    )
+    if (cached && !directoryQuery.forceRefresh && isFreshSessionDirectoryEntry(cached.refreshedAt)) {
+      logRouter('info', 'Bridge sessions list served from Router cache', {
+        queryKeys: queryKeys(directoryQuery.upstreamSearch),
+        cacheRevision: cached.revision,
+        rowCount: cached.rows.length,
+      })
+      sendJson(response, 200, sessionDirectoryCacheStore.response(cached, 'fresh'))
+      return
+    }
+    logRouter('info', 'Bridge sessions list requested', {
+      queryKeys: queryKeys(directoryQuery.upstreamSearch),
+      cacheAvailable: Boolean(cached),
+      forceRefresh: directoryQuery.forceRefresh,
+    })
+    try {
+      const proxied = await proxyViaGateway(
+        payload,
+        `api/sessions${directoryQuery.upstreamSearch}`,
+        { sourceHeaders: request.headers },
+      )
+      const status = proxiedStatus(proxied)
+      logRouter(statusLevel(status), 'Bridge sessions list received', proxiedLogContext(proxied, undefined, startedAt))
+      if (status >= 200 && status < 300) {
+        const projected = projectedGatewaySessionListPayload(
+          proxied.response,
+          payload.hermesAgentId,
+        )
+        const refreshed = sessionDirectoryCacheStore.put(
+          payload.hermesAgentId,
+          directoryQuery.cacheKey,
+          projected,
+        )
+        if (refreshed) {
+          sendJson(
+            response,
+            status,
+            sessionDirectoryPayloadWithCacheMetadata(projected, refreshed),
+          )
+          return
+        }
+      }
+      if (cached && canUseStaleSessionDirectoryFallback(status)) {
+        sendJson(response, 200, sessionDirectoryCacheStore.response(cached, 'stale-fallback'))
+        return
+      }
+      sendGatewayResponse(response, proxied.response)
+    } catch (error) {
+      if (cached) {
+        logRouter('warn', 'Bridge sessions list fell back to stale Router cache', {
+          cacheRevision: cached.revision,
+          rowCount: cached.rows.length,
+        }, error)
+        sendJson(response, 200, sessionDirectoryCacheStore.response(cached, 'stale-fallback'))
+        return
+      }
+      throw error
+    }
     return
   }
 
