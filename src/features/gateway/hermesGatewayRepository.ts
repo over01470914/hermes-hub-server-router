@@ -104,6 +104,7 @@ export function requiredGatewayCapability(payload: GatewayRpcRequest): string | 
   if (method === 'model.options') return modelProbeRequested(payload) ? 'models.probe' : 'models'
   if (method === 'attachment.stage') return 'attachments.write'
   if (method === 'artifact.fetch') return 'artifacts.read'
+  if (method === 'session.display-history') return 'sessions.lineage-history'
   if (method === 'session.usage' || method === 'session.context_breakdown') return 'sessions.usage'
   return null
 }

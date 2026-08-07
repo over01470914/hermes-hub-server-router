@@ -2835,6 +2835,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         sessions: {
           reconcile: sessionResourcesAvailable,
           messageCursorPage: sessionResourcesAvailable,
+          lineageHistory: gatewayAdvertisesCapability(
+            payload.hermesAgentId,
+            'sessions.lineage-history',
+          ),
           changeEvents: gatewayAdvertisesCapability(
             payload.hermesAgentId,
             'sessions.change-events',
@@ -3247,7 +3251,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (sessionActionMatch && request.method === 'GET' && sessionActionMatch[2] === 'messages') {
     const clientSessionId = decodeURIComponent(sessionActionMatch[1])
-    const sessionId = encodeURIComponent(sessionReadTarget(payload.hermesAgentId, clientSessionId))
+    const readSessionId = sessionReadTarget(payload.hermesAgentId, clientSessionId)
+    const sessionId = encodeURIComponent(readSessionId)
     const cursorPage = url.searchParams.get('cursorPage') === '1'
     let offset = url.searchParams.get('offset') || '0'
     const parsedLimit = Number(url.searchParams.get('limit') || (cursorPage ? 20 : 150))
@@ -3278,6 +3283,55 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       offset,
       limit
     })
+    if (
+      cursorPage
+      && gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions.lineage-history')
+    ) {
+      const numericOffset = Number(offset)
+      const proxied = await proxyViaGateway(payload, 'api/ws', {
+        method: 'POST',
+        body: gatewayRpcBody('session.display-history', {
+          session_id: readSessionId,
+          offset: numericOffset,
+          limit: requestedLimit,
+        }, sessionMessagesProxyTimeoutMs),
+        contentType: 'application/json',
+        sourceHeaders: request.headers,
+        timeoutMs: sessionMessagesProxyTimeoutMs,
+      })
+      logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge lineage messages received', {
+        ...proxiedLogContext(proxied, undefined, startedAt),
+        sessionId: clientSessionId,
+        offset: numericOffset,
+        limit: requestedLimit,
+      })
+      if (proxiedStatus(proxied) < 200 || proxiedStatus(proxied) >= 300) {
+        sendGatewayResponse(response, proxied.response)
+        return
+      }
+      const lineagePage = asRecord(jsonPayloadFromProxied(proxied))
+      const items = Array.isArray(lineagePage?.items) ? lineagePage.items : []
+      const nextOffset = Number(lineagePage?.nextOffset)
+      const hasMoreOlder = lineagePage?.hasMoreOlder === true
+      const revision = typeof lineagePage?.transcriptRevision === 'string'
+        ? lineagePage.transcriptRevision
+        : ''
+      const knownRevision = url.searchParams.get('revision') || ''
+      sendJson(response, 200, {
+        items: knownRevision === revision ? [] : items,
+        olderCursor: hasMoreOlder && Number.isSafeInteger(nextOffset)
+          ? Buffer.from(String(nextOffset), 'utf8').toString('base64url')
+          : null,
+        hasMoreOlder,
+        transcriptRevision: revision || null,
+        notModified: Boolean(revision) && knownRevision === revision,
+        loadedCount: Number(lineagePage?.loadedCount) || items.length,
+        totalCount: Number(lineagePage?.totalCount) || items.length,
+        segmentCount: Number(lineagePage?.segmentCount) || 1,
+        lineageComplete: lineagePage?.lineageComplete === true,
+      })
+      return
+    }
     const proxied = await proxyViaGateway(
       payload,
       `api/sessions/${sessionId}/messages?offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(limit)}`,
