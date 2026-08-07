@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -40,11 +41,11 @@ async function reserveLoopbackPort(): Promise<number> {
   return address.port
 }
 
-function startRouter(repositoryRoot: string, routerPackageRoot: string, env: NodeJS.ProcessEnv): RouterProcess {
-  const tsxCli = join(repositoryRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs')
+function startRouter(routerPackageRoot: string, env: NodeJS.ProcessEnv): RouterProcess {
+  const tsxCli = createRequire(import.meta.url).resolve('tsx/cli')
   const routerEntry = join(routerPackageRoot, 'src', 'bridgeServer.ts')
   const child = spawn(process.execPath, [tsxCli, routerEntry], {
-    cwd: repositoryRoot,
+    cwd: routerPackageRoot,
     env,
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -234,7 +235,6 @@ function cacheState(body: JsonRecord): string | undefined {
 }
 
 const routerPackageRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..')
-const repositoryRoot = routerPackageRoot
 const port = await reserveLoopbackPort()
 const workdir = await mkdtemp(join(tmpdir(), 'hermes-hub-session-directory-bridge-'))
 const baseUrl = `http://127.0.0.1:${port}`
@@ -254,7 +254,7 @@ const upstreamPayload: JsonRecord = {
   has_more: false,
   sessions: sessionRows(),
 }
-const router = startRouter(repositoryRoot, routerPackageRoot, {
+const router = startRouter(routerPackageRoot, {
   ...process.env,
   NODE_ENV: 'development',
   HERMES_HUB_ROUTER_HOST: '127.0.0.1',
