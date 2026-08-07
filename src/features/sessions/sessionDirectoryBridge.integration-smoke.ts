@@ -234,7 +234,7 @@ function cacheState(body: JsonRecord): string | undefined {
 }
 
 const routerPackageRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..')
-const repositoryRoot = join(routerPackageRoot, '../..')
+const repositoryRoot = routerPackageRoot
 const port = await reserveLoopbackPort()
 const workdir = await mkdtemp(join(tmpdir(), 'hermes-hub-session-directory-bridge-'))
 const baseUrl = `http://127.0.0.1:${port}`
