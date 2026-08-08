@@ -53,6 +53,11 @@ import { SessionMetadataStore } from './features/sessions/sessionMetadataStore.j
 import { NativeConversationStore } from './features/sessions/nativeConversationStore.js'
 import { SessionDirectoryCacheStore } from './features/sessions/sessionDirectoryCacheStore.js'
 import { projectNativeSessionDetailPayload, projectNativeSessionListPayload } from './features/sessions/nativeSessionProjection.js'
+import {
+  decodeSessionHistoryCursor,
+  encodeSessionHistoryCursor,
+  isSessionHistoryRevision,
+} from './features/sessions/sessionHistoryCursor.js'
 import { nativeSessionLineagesFromPayload } from './features/sessions/sessionLineage.js'
 import {
   KanbanBridgeRequestError,
@@ -3255,6 +3260,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const sessionId = encodeURIComponent(readSessionId)
     const cursorPage = url.searchParams.get('cursorPage') === '1'
     let offset = url.searchParams.get('offset') || '0'
+    let snapshotRevision: string | undefined
     const parsedLimit = Number(url.searchParams.get('limit') || (cursorPage ? 20 : 150))
     if (!Number.isSafeInteger(parsedLimit) || parsedLimit < 1) {
       sendJson(response, 400, { error: 'Message limit is invalid', code: 'validation_error' })
@@ -3265,9 +3271,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       const cursor = url.searchParams.get('cursor') || ''
       if (cursor) {
         try {
-          const decoded = Buffer.from(cursor, 'base64url').toString('utf8')
-          if (!/^\d{1,10}$/.test(decoded)) throw new Error('invalid cursor')
-          offset = decoded
+          const decoded = decodeSessionHistoryCursor(cursor)
+          offset = String(decoded.offset)
+          snapshotRevision = decoded.snapshotRevision
         } catch {
           sendJson(response, 400, { error: 'Message cursor is invalid', code: 'validation_error' })
           return
@@ -3288,12 +3294,19 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       && gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions.lineage-history')
     ) {
       const numericOffset = Number(offset)
+      const knownRevision = url.searchParams.get('revision') || ''
+      if (knownRevision && !isSessionHistoryRevision(knownRevision)) {
+        sendJson(response, 400, { error: 'Transcript revision is invalid', code: 'validation_error' })
+        return
+      }
       const proxied = await proxyViaGateway(payload, 'api/ws', {
         method: 'POST',
         body: gatewayRpcBody('session.display-history', {
           session_id: readSessionId,
           offset: numericOffset,
           limit: requestedLimit,
+          ...(knownRevision ? { known_revision: knownRevision } : {}),
+          ...(snapshotRevision ? { snapshot_revision: snapshotRevision } : {}),
         }, sessionMessagesProxyTimeoutMs),
         contentType: 'application/json',
         sourceHeaders: request.headers,
@@ -3316,19 +3329,39 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       const revision = typeof lineagePage?.transcriptRevision === 'string'
         ? lineagePage.transcriptRevision
         : ''
-      const knownRevision = url.searchParams.get('revision') || ''
+      if (snapshotRevision && revision !== snapshotRevision) {
+        sendJson(response, 409, {
+          error: 'Session history changed while loading',
+          code: 'history_snapshot_changed',
+          transcriptRevision: revision || null,
+        })
+        return
+      }
+      const gatewayNotModified = lineagePage?.notModified === true
+      const notModified = gatewayNotModified
+        || (numericOffset === 0 && Boolean(revision) && knownRevision === revision)
+      const totalCount = Number(lineagePage?.totalCount) || items.length
+      const loadedCount = notModified
+        ? totalCount
+        : Number(lineagePage?.loadedCount) || items.length
       sendJson(response, 200, {
-        items: knownRevision === revision ? [] : items,
-        olderCursor: hasMoreOlder && Number.isSafeInteger(nextOffset)
-          ? Buffer.from(String(nextOffset), 'utf8').toString('base64url')
+        items: notModified ? [] : items,
+        olderCursor: !notModified && hasMoreOlder && Number.isSafeInteger(nextOffset)
+          ? encodeSessionHistoryCursor(nextOffset, revision || undefined)
           : null,
-        hasMoreOlder,
+        hasMoreOlder: notModified ? false : hasMoreOlder,
         transcriptRevision: revision || null,
-        notModified: Boolean(revision) && knownRevision === revision,
-        loadedCount: Number(lineagePage?.loadedCount) || items.length,
-        totalCount: Number(lineagePage?.totalCount) || items.length,
+        notModified,
+        loadedCount,
+        totalCount,
         segmentCount: Number(lineagePage?.segmentCount) || 1,
         lineageComplete: lineagePage?.lineageComplete === true,
+        snapshotCache: typeof lineagePage?.snapshotCache === 'string'
+          ? lineagePage.snapshotCache
+          : null,
+        snapshotAgeMs: Number.isFinite(Number(lineagePage?.snapshotAgeMs))
+          ? Math.max(0, Number(lineagePage?.snapshotAgeMs))
+          : null,
       })
       return
     }

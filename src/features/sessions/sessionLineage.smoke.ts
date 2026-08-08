@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict'
+import {
+  decodeSessionHistoryCursor,
+  encodeSessionHistoryCursor,
+} from './sessionHistoryCursor.js'
 import { nativeSessionLineagesFromPayload } from './sessionLineage.js'
 
 function lineage(payload: unknown, rootSessionId: string) {
@@ -141,6 +145,21 @@ assert.equal(hinted[0].rootSessionId, 'session_hidden_root')
 assert.equal(hinted[0].tipSessionId, 'session_projected_tip')
 assert.deepEqual(hinted[0].pathSessionIds, ['session_hidden_root', 'session_projected_tip'])
 
+const historyRevision = 'a'.repeat(64)
+const historyCursor = encodeSessionHistoryCursor(50, historyRevision)
+assert.deepEqual(decodeSessionHistoryCursor(historyCursor), {
+  offset: 50,
+  snapshotRevision: historyRevision,
+})
+assert.deepEqual(
+  decodeSessionHistoryCursor(Buffer.from('100', 'utf8').toString('base64url')),
+  { offset: 100 },
+)
+assert.throws(() => decodeSessionHistoryCursor(Buffer.from(JSON.stringify({
+  offset: 50,
+  snapshotRevision: 'stale',
+}), 'utf8').toString('base64url')))
+
 console.log(JSON.stringify({
   ok: true,
   checks: [
@@ -148,5 +167,6 @@ console.log(JSON.stringify({
     'freshest importable descendant wins across competing continuation branches',
     'fork, cross-source, cross-profile, and pre-end children remain independent',
     'upstream root/tip hints replace the projected-row singleton',
+    'history cursors bind subsequent pages to one transcript snapshot',
   ],
 }, null, 2))
