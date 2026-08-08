@@ -59,6 +59,7 @@ import {
   isSessionHistoryRevision,
 } from './features/sessions/sessionHistoryCursor.js'
 import { nativeSessionLineagesFromPayload } from './features/sessions/sessionLineage.js'
+import { projectSessionMessagePage } from './features/sessions/sessionMessagePage.js'
 import {
   KanbanBridgeRequestError,
   normalizeKanbanBridgeError,
@@ -3282,6 +3283,11 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         offset = '0'
       }
     }
+    const knownRevision = url.searchParams.get('revision') || ''
+    if (cursorPage && knownRevision && !isSessionHistoryRevision(knownRevision)) {
+      sendJson(response, 400, { error: 'Transcript revision is invalid', code: 'validation_error' })
+      return
+    }
     const limit = String(cursorPage ? requestedLimit + 1 : requestedLimit)
     const startedAt = Date.now()
     logRouter('info', 'Bridge messages receive requested', {
@@ -3294,11 +3300,6 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       && gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions.lineage-history')
     ) {
       const numericOffset = Number(offset)
-      const knownRevision = url.searchParams.get('revision') || ''
-      if (knownRevision && !isSessionHistoryRevision(knownRevision)) {
-        sendJson(response, 400, { error: 'Transcript revision is invalid', code: 'validation_error' })
-        return
-      }
       const proxied = await proxyViaGateway(payload, 'api/ws', {
         method: 'POST',
         body: gatewayRpcBody('session.display-history', {
@@ -3367,7 +3368,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
     const proxied = await proxyViaGateway(
       payload,
-      `api/sessions/${sessionId}/messages?offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(limit)}`,
+      cursorPage
+        ? `api/sessions/${sessionId}/messages`
+        : `api/sessions/${sessionId}/messages?offset=${encodeURIComponent(offset)}&limit=${encodeURIComponent(limit)}`,
       {
         sourceHeaders: request.headers,
         timeoutMs: sessionMessagesProxyTimeoutMs,
@@ -3389,26 +3392,34 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       : Array.isArray(payloadJson?.data)
         ? payloadJson.data
         : []
-    const items: unknown[] = []
-    let projectedBytes = 2
-    for (const item of sourceRows.slice(0, requestedLimit)) {
-      const bytes = Buffer.byteLength(JSON.stringify(item), 'utf8') + 1
-      if (items.length > 0 && projectedBytes + bytes > 512 * 1024) break
-      items.push(item)
-      projectedBytes += bytes
-    }
     const numericOffset = Number(offset)
-    const hasMoreOlder = sourceRows.length > items.length
-    const revision = createHash('sha256').update(JSON.stringify(items)).digest('hex')
-    const knownRevision = url.searchParams.get('revision') || ''
+    const page = projectSessionMessagePage(
+      sourceRows,
+      numericOffset,
+      requestedLimit,
+      512 * 1024,
+    )
+    if (snapshotRevision && snapshotRevision !== page.transcriptRevision) {
+      sendJson(response, 409, {
+        error: 'Session history changed while loading',
+        code: 'history_snapshot_changed',
+        transcriptRevision: page.transcriptRevision,
+      })
+      return
+    }
+    const notModified = Boolean(knownRevision) && knownRevision === page.transcriptRevision
     sendJson(response, 200, {
-      items: knownRevision === revision ? [] : items,
-      olderCursor: hasMoreOlder
-        ? Buffer.from(String(numericOffset + items.length), 'utf8').toString('base64url')
+      items: notModified ? [] : page.items,
+      olderCursor: !notModified && page.nextOffset !== undefined
+        ? encodeSessionHistoryCursor(page.nextOffset, page.transcriptRevision)
         : null,
-      hasMoreOlder,
-      transcriptRevision: revision,
-      notModified: knownRevision === revision,
+      hasMoreOlder: !notModified && page.hasMoreOlder,
+      transcriptRevision: page.transcriptRevision,
+      notModified,
+      loadedCount: notModified ? page.totalCount : page.loadedCount,
+      totalCount: page.totalCount,
+      segmentCount: 1,
+      lineageComplete: false,
     })
     return
   }

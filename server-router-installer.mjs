@@ -83,6 +83,7 @@ const SERVER_FILES = [
   'src/features/sessions/sessionDirectoryCacheStore.ts',
   'src/features/sessions/sessionHistoryCursor.ts',
   'src/features/sessions/sessionLineage.ts',
+  'src/features/sessions/sessionMessagePage.ts',
 ]
 const MANAGED_ENV_KEYS = new Set([
   'NODE_ENV',
