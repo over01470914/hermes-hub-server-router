@@ -83,7 +83,7 @@ assert.equal(
 )
 assert.equal(requiredGatewayCapability(rpc('model.options', { probe: true })), 'models.probe')
 assert.equal(requiredGatewayCapability(rpc('artifact.fetch', { sessionId: 'session_1' })), 'artifacts.read')
-assert.equal(requiredGatewayCapability(rpc('session.display-history', { session_id: 'session_1' })), 'sessions.lineage-history')
+assert.equal(requiredGatewayCapability(rpc('session.display-history', { session_id: 'session_1' })), 'sessions.message-page')
 assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/model/options' }), 'models')
 assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/jobs' }), 'cron')
 assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/jobs/job_1/runs?limit=20' }), 'cron')
@@ -109,6 +109,16 @@ assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/kanban/priva
     connections.request(hermesAgentId, { method: 'GET', path: '/api/model/options' }),
     /required capability: models/,
   )
+}
+
+{
+  const gateway = new FakeRegistry(state(['sessions.lineage-history']))
+  const connections = repository(gateway)
+
+  // Older Plugins exposed only canonical lineage history.  Keep them readable
+  // until their Sidecar/Plugin pair is upgraded to sessions.message-page.
+  await connections.request(hermesAgentId, rpc('session.display-history', { session_id: 'session_1' }))
+  assert.equal(gateway.requestCalls, 1)
 }
 
 {

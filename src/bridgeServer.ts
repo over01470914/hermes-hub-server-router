@@ -2841,6 +2841,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         sessions: {
           reconcile: sessionResourcesAvailable,
           messageCursorPage: sessionResourcesAvailable,
+          messagePageTransportBounded:
+            gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions.message-page') ||
+            gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions.lineage-history'),
           lineageHistory: gatewayAdvertisesCapability(
             payload.hermesAgentId,
             'sessions.lineage-history',
@@ -3297,7 +3300,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     })
     if (
       cursorPage
-      && gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions.lineage-history')
+      && (
+        gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions.message-page')
+        || gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions.lineage-history')
+      )
     ) {
       const numericOffset = Number(offset)
       const proxied = await proxyViaGateway(payload, 'api/ws', {

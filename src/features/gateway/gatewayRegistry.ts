@@ -844,7 +844,11 @@ export class GatewayRegistry {
       })
       for (const [id, pending] of state.pending.entries()) {
         clearTimeout(pending.timeout)
-        pending.reject(new Error(reason))
+        pending.reject(Object.assign(new Error(reason), {
+          statusCode: 503,
+          code: 'gateway_disconnected',
+          retryAfterSeconds: 1,
+        }))
         state.pending.delete(id)
       }
       for (const [id, pending] of state.pendingHeartbeats.entries()) {
@@ -861,7 +865,11 @@ export class GatewayRegistry {
       }
       for (const [id, pending] of state.pendingRuntimeSnapshots.entries()) {
         clearTimeout(pending.timeout)
-        pending.reject(new Error(reason))
+        pending.reject(Object.assign(new Error(reason), {
+          statusCode: 503,
+          code: 'gateway_disconnected',
+          retryAfterSeconds: 1,
+        }))
         state.pendingRuntimeSnapshots.delete(id)
       }
       state.inFlightRpc = 0

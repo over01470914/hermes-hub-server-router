@@ -13,7 +13,11 @@ export interface HermesGatewayResponse {
 }
 
 function gatewayUnavailable(message: string, statusCode: number, code: string): Error {
-  return Object.assign(new Error(message), { statusCode, code })
+  return Object.assign(new Error(message), {
+    statusCode,
+    code,
+    ...(code === 'gateway_offline' ? { retryAfterSeconds: 1 } : {}),
+  })
 }
 
 function normalizedPath(path: string): string {
@@ -104,7 +108,7 @@ export function requiredGatewayCapability(payload: GatewayRpcRequest): string | 
   if (method === 'model.options') return modelProbeRequested(payload) ? 'models.probe' : 'models'
   if (method === 'attachment.stage') return 'attachments.write'
   if (method === 'artifact.fetch') return 'artifacts.read'
-  if (method === 'session.display-history') return 'sessions.lineage-history'
+  if (method === 'session.display-history') return 'sessions.message-page'
   if (method === 'session.usage' || method === 'session.context_breakdown') return 'sessions.usage'
   return null
 }
@@ -138,7 +142,10 @@ export class HermesGatewayRepository {
         'gateway_capability_unsupported',
       )
     }
-    if (!gateway.capabilities?.includes(capability)) {
+    const supportsLegacyLineageHistory =
+      capability === 'sessions.message-page' &&
+      gateway.capabilities?.includes('sessions.lineage-history') === true
+    if (!gateway.capabilities?.includes(capability) && !supportsLegacyLineageHistory) {
       throw gatewayUnavailable(
         `Hermes Hub Gateway does not advertise required capability: ${capability}`,
         501,
