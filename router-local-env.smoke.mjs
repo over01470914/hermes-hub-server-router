@@ -357,6 +357,11 @@ try {
   assert.equal(wrongMirror.stdout.includes(regeneratedCliToken), false)
   assert.equal(wrongMirror.stderr.includes(regeneratedCliToken), false)
 
+  await assert.rejects(
+    preflightRouterStart({}),
+    /Router is not initialized: approval token is missing\. Run: pnpm init:router/,
+  )
+
   const legacy = await listenHealth({
     ok: true,
     service: 'hermes-hub-router',
@@ -368,6 +373,7 @@ try {
         HERMES_HUB_ROUTER_HOST: '127.0.0.1',
         HERMES_HUB_ROUTER_PORT: String(legacy.port),
         HERMES_HUB_ROUTER_URL: `http://127.0.0.1:${legacy.port}`,
+        HERMES_HUB_AGENT_APPROVAL_TOKEN: String.fromCharCode(97).repeat(32),
       }),
       /legacy Router is already running.*has not loaded newly initialized or rotated environment values/,
     )
@@ -387,6 +393,7 @@ try {
         HERMES_HUB_ROUTER_HOST: '127.0.0.1',
         HERMES_HUB_ROUTER_PORT: String(current.port),
         HERMES_HUB_ROUTER_URL: `http://127.0.0.1:${current.port}`,
+        HERMES_HUB_AGENT_APPROVAL_TOKEN: String.fromCharCode(97).repeat(32),
       }),
       /Gateway-only Router is already running.*has not loaded newly initialized or rotated environment values/,
     )
@@ -400,6 +407,7 @@ try {
   await preflightRouterStart({
     HERMES_HUB_ROUTER_HOST: '127.0.0.1',
     HERMES_HUB_ROUTER_PORT: String(availablePort),
+    HERMES_HUB_AGENT_APPROVAL_TOKEN: String.fromCharCode(97).repeat(32),
     HERMES_HUB_ROUTER_URL: `http://127.0.0.1:${availablePort}`,
   }, { timeoutMs: 50 })
 

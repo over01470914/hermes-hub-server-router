@@ -652,6 +652,9 @@ async function assertPortAvailable(host, port, options = {}) {
 }
 
 export async function preflightRouterStart(environment, options = {}) {
+  if (!tokenIsValid(environment[approvalTokenKey])) {
+    throw new Error("Router is not initialized: approval token is missing. Run: pnpm init:router")
+  }
   const port = Number(environment.HERMES_HUB_ROUTER_PORT || 4320)
   const host = environment.HERMES_HUB_ROUTER_HOST || '0.0.0.0'
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
