@@ -109,6 +109,7 @@ export function requiredGatewayCapability(payload: GatewayRpcRequest): string | 
   if (method === 'attachment.stage') return 'attachments.write'
   if (method === 'artifact.fetch') return 'artifacts.read'
   if (method === 'session.display-history') return 'sessions.message-page'
+  if (method === 'session.transcript-sync') return 'sessions.transcript-sync-v1'
   if (method === 'session.usage' || method === 'session.context_breakdown') return 'sessions.usage'
   return null
 }

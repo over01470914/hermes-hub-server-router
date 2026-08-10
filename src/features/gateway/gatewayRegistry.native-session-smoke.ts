@@ -267,6 +267,37 @@ assert.deepEqual(events[7]?.data, {
 assert.equal(socketA.readyState, 1)
 
 socketA.receive({
+  type: 'session_event',
+  eventId: 'evt_transcript_commit_aaaa',
+  gatewayId: 'gw_native_a',
+  hermesAgentId: 'agent_native_a',
+  laneId: 'lane_aaaaaaaa',
+  sessionId: 'session_native_continuation',
+  submissionId: 'sub_aaaaaaaa',
+  event: 'session.transcript.committed',
+  data: {
+    transcript_revision: 'a'.repeat(64),
+    head_cursor: 'opaque-head-cursor',
+    total_count: 10,
+    segment_count: 2,
+    lineage_complete: true,
+    committed_at: 1234,
+    accidental_body: 'must not cross the Router event contract',
+  },
+  sentAt: Date.now(),
+})
+assert.equal(events.length, 9)
+assert.deepEqual(events[8]?.data, {
+  transcript_revision: 'a'.repeat(64),
+  head_cursor: 'opaque-head-cursor',
+  total_count: 10,
+  segment_count: 2,
+  lineage_complete: true,
+  committed_at: 1234,
+})
+assert.equal(socketA.readyState, 1)
+
+socketA.receive({
   type: 'session_submit_ack',
   id: sent.id,
   requestType: 'session_submit',
@@ -323,6 +354,10 @@ socketA.receive({
     scope: 'session',
     session_id: 'session_native_a',
     model: 'model-a',
+    reasoning_effort: 'high',
+    service_tier: 'priority',
+    fast: true,
+    running: true,
     usage: { total_tokens: 48 },
     context: { context_used: 48, accuracy: 'estimated' },
     compression: { status: 'idle', available: false },
@@ -333,6 +368,10 @@ const runtime = await runtimePromise
 assert.equal(runtime.sessionId, 'session_native_a')
 assert.equal(runtimeSnapshots.length, 1)
 assert.equal(runtime.snapshot.model, 'model-a')
+assert.equal(runtime.snapshot.reasoning_effort, 'high')
+assert.equal(runtime.snapshot.service_tier, 'priority')
+assert.equal(runtime.snapshot.fast, true)
+assert.equal(runtime.snapshot.running, true)
 assert.equal('debug_prompt' in runtime.snapshot, false)
 assert.equal(registry.getRuntimeSnapshotByAgentId('agent_native_a', 'session_native_a')?.snapshot.model, 'model-a')
 
@@ -358,9 +397,10 @@ console.log(JSON.stringify({
     'transient assistant live input preserves the Gateway connection',
     'Desktop session info reaches the typed Flutter consumer through the Router allowlist',
     'session title metadata is identity-checked and bounded by the Router',
+    'transcript commits relay only revision and head metadata without message bodies',
     'native acknowledgement returns the Hermes session id',
     'command presentation is forwarded only to a capable Gateway',
-    'versioned runtime snapshots are requested separately, cached, and redacted by the Router',
+    'versioned runtime snapshots retain bounded runtime controls and redact host fields',
     'Gateway disconnect produces an ambiguous result and no retry',
   ],
 }, null, 2))

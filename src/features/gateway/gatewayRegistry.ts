@@ -483,6 +483,12 @@ function cleanRuntimeSnapshot(
   }
   const model = safeRuntimeString(rawSnapshot.model, 240)
   const provider = safeRuntimeString(rawSnapshot.provider, 120)
+  const reasoningEffort = safeRuntimeString(rawSnapshot.reasoning_effort, 120)
+  const serviceTier = safeRuntimeString(rawSnapshot.service_tier, 120)
+  const transcriptRevision = safeRuntimeString(rawSnapshot.transcript_revision, 160)
+  const headCursor = safeRuntimeString(rawSnapshot.head_cursor, 512)
+  const totalCount = safeRuntimeNumber(rawSnapshot.total_count)
+  const segmentCount = safeRuntimeNumber(rawSnapshot.segment_count)
   const revision = safeRuntimeString(rawSnapshot.revision, 160)
   const status = safeRuntimeString(rawSnapshot.status, 80)
   const source = safeRuntimeString(rawSnapshot.source, 120)
@@ -524,6 +530,17 @@ function cleanRuntimeSnapshot(
     observed_at: safeRuntimeNumber(rawSnapshot.observed_at) || Date.now(),
     ...(model ? { model } : {}),
     ...(provider ? { provider } : {}),
+    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+    ...(serviceTier ? { service_tier: serviceTier } : {}),
+    ...(typeof rawSnapshot.fast === 'boolean' ? { fast: rawSnapshot.fast } : {}),
+    ...(typeof rawSnapshot.running === 'boolean' ? { running: rawSnapshot.running } : {}),
+    ...(transcriptRevision ? { transcript_revision: transcriptRevision } : {}),
+    ...(headCursor ? { head_cursor: headCursor } : {}),
+    ...(totalCount !== undefined ? { total_count: totalCount } : {}),
+    ...(segmentCount !== undefined ? { segment_count: segmentCount } : {}),
+    ...(typeof rawSnapshot.lineage_complete === 'boolean'
+      ? { lineage_complete: rawSnapshot.lineage_complete }
+      : {}),
     ...(status ? { status } : {}),
     usage: cleanUsage,
     context: cleanContext,
@@ -563,6 +580,7 @@ const nativeSessionEvents = new Set([
   'review.summary',
   'processing.started',
   'processing.completed',
+  'session.transcript.committed',
   'prompt.requested',
   'prompt.resolved',
   'session.resync_required',
@@ -679,6 +697,22 @@ function cleanSessionEvent(
         stored_session_id: storedSessionId,
         previous_stored_session_id: previousStoredSessionId,
       }
+    }
+  } else if (event === 'session.transcript.committed') {
+    const transcriptRevision = safeRuntimeString(data.transcript_revision, 160)
+    const headCursor = safeRuntimeString(data.head_cursor, 512)
+    const totalCount = safeRuntimeNumber(data.total_count)
+    const segmentCount = safeRuntimeNumber(data.segment_count)
+    if (!sessionId || !transcriptRevision || !headCursor || totalCount === undefined || segmentCount === undefined) {
+      throw new Error('Gateway transcript commit event shape is invalid')
+    }
+    data = {
+      transcript_revision: transcriptRevision,
+      head_cursor: headCursor,
+      total_count: totalCount,
+      segment_count: segmentCount,
+      lineage_complete: data.lineage_complete === true,
+      committed_at: safeRuntimeNumber(data.committed_at) || Date.now(),
     }
   }
   const submissionId = typeof value.submissionId === 'string' && /^sub_[A-Za-z0-9._:-]{8,191}$/.test(value.submissionId)

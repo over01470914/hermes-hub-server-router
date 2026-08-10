@@ -259,6 +259,20 @@ const clientEventHub = new ClientEventHub()
 const sessionMetadataStore = new SessionMetadataStore(sessionMetadataStorePath)
 const nativeConversationStore = new NativeConversationStore(nativeConversationStorePath)
 const sessionDirectoryCacheStore = new SessionDirectoryCacheStore(sessionDirectoryCacheStorePath)
+interface TranscriptHeadSnapshot {
+  transcriptRevision: string
+  headCursor: string
+  totalCount: number
+  segmentCount: number
+  lineageComplete: boolean
+  observedAt: number
+}
+// Metadata-only cache for conditional transcript reads. Transcript bodies
+// never enter the Router realtime journal or this process-level cache.
+const transcriptHeadSnapshots = new Map<string, TranscriptHeadSnapshot>()
+// Coalesce the same conditional read. This deliberately excludes native
+// submission and uses the complete Agent/conversation/revision cursor key.
+const transcriptSyncInFlight = new Map<string, Promise<ProxiedHermesResponse>>()
 const pushStorageSecret = process.env.HERMES_HUB_PUSH_STORAGE_KEY || ''
 const pushDeviceRegistry = pushStorageSecret.length >= 32
   ? new PushDeviceRegistry(
@@ -321,6 +335,13 @@ gatewayRegistry.setSessionEventHandler(event => {
   }
   const resolvedSessionId =
     conversation.sessionId || event.sessionId || conversation.conversationId
+  const eventData = event.event === 'session.transcript.committed'
+    ? cacheTranscriptHeadSnapshot(
+      event.hermesAgentId,
+      conversation.conversationId,
+      event.data,
+    )
+    : event.data
   clientEventHub.publish({
     scope: `hermes-agent:${event.hermesAgentId}`,
     eventId: event.eventId,
@@ -328,7 +349,7 @@ gatewayRegistry.setSessionEventHandler(event => {
     sessionId: resolvedSessionId,
     submissionId: event.submissionId,
     event: event.event,
-    data: event.data,
+    data: eventData,
   })
   if (pushDispatcher) {
     void pushDispatcher.dispatch({
@@ -824,6 +845,119 @@ function sendNativeSessionRequired(response: ServerResponse): void {
 function gatewayAdvertisesCapability(hermesAgentId: string, capability: string): boolean {
   const gateway = hermesGateways.get(hermesAgentId)
   return gateway?.online === true && gateway.capabilities?.includes(capability) === true
+}
+
+function transcriptHeadKey(hermesAgentId: string, conversationId: string): string {
+  return `${hermesAgentId}:${conversationId}`
+}
+
+function boundedWholeNumber(value: unknown): number | undefined {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined
+}
+
+function boundedText(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim()
+  return normalized.length > 0 && normalized.length <= maxLength ? normalized : undefined
+}
+
+function cacheTranscriptHeadSnapshot(
+  hermesAgentId: string,
+  conversationId: string,
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  const transcriptRevision = boundedText(data.transcript_revision, 160)
+  const headCursor = boundedText(data.head_cursor, 512)
+  const totalCount = boundedWholeNumber(data.total_count)
+  const segmentCount = boundedWholeNumber(data.segment_count)
+  // GatewayRegistry has already enforced this contract. Keep this guard here
+  // so a future event-path change cannot cache or relay a partial snapshot.
+  if (!transcriptRevision || !headCursor || totalCount === undefined || segmentCount === undefined) {
+    return {}
+  }
+  const observedAt = boundedWholeNumber(data.committed_at) || Date.now()
+  const snapshot: TranscriptHeadSnapshot = {
+    transcriptRevision,
+    headCursor,
+    totalCount,
+    segmentCount,
+    lineageComplete: data.lineage_complete === true,
+    observedAt,
+  }
+  transcriptHeadSnapshots.set(transcriptHeadKey(hermesAgentId, conversationId), snapshot)
+  return {
+    transcript_revision: snapshot.transcriptRevision,
+    head_cursor: snapshot.headCursor,
+    total_count: snapshot.totalCount,
+    segment_count: snapshot.segmentCount,
+    lineage_complete: snapshot.lineageComplete,
+    committed_at: snapshot.observedAt,
+  }
+}
+
+function transcriptHeadSnapshot(
+  hermesAgentId: string,
+  conversationId: string,
+): TranscriptHeadSnapshot | undefined {
+  return transcriptHeadSnapshots.get(transcriptHeadKey(hermesAgentId, conversationId))
+}
+
+function runtimeTranscriptHead(snapshot: Record<string, unknown>): TranscriptHeadSnapshot | undefined {
+  const transcriptRevision = boundedText(snapshot.transcript_revision, 160)
+  const headCursor = boundedText(snapshot.head_cursor, 512)
+  const totalCount = boundedWholeNumber(snapshot.total_count)
+  const segmentCount = boundedWholeNumber(snapshot.segment_count)
+  if (!transcriptRevision || !headCursor || totalCount === undefined || segmentCount === undefined) {
+    return undefined
+  }
+  return {
+    transcriptRevision,
+    headCursor,
+    totalCount,
+    segmentCount,
+    lineageComplete: snapshot.lineage_complete === true,
+    observedAt: boundedWholeNumber(snapshot.observed_at) || Date.now(),
+  }
+}
+
+function projectRuntimeSummary(
+  clientSessionId: string | undefined,
+  hermesSessionId: string | undefined,
+  snapshot: Record<string, unknown>,
+  cache: { stale: boolean; receivedAt: number },
+  head?: TranscriptHeadSnapshot,
+): Record<string, unknown> {
+  const usage = asRecord(snapshot.usage) || {}
+  const context = asRecord(snapshot.context) || {}
+  const running = typeof snapshot.running === 'boolean'
+    ? snapshot.running
+    : snapshot.status === 'running'
+  const effectiveHead = head || runtimeTranscriptHead(snapshot)
+  return {
+    object: 'hermes.hub.session.summary',
+    version: 1,
+    ...(clientSessionId ? { sessionId: clientSessionId, session_id: clientSessionId } : {}),
+    ...(hermesSessionId ? { hermesSessionId, hermes_session_id: hermesSessionId } : {}),
+    ...(boundedText(snapshot.model, 240) ? { model: boundedText(snapshot.model, 240) } : {}),
+    ...(boundedText(snapshot.provider, 120) ? { provider: boundedText(snapshot.provider, 120) } : {}),
+    ...(boundedText(snapshot.reasoning_effort, 120) ? { reasoningEffort: boundedText(snapshot.reasoning_effort, 120) } : {}),
+    ...(typeof snapshot.fast === 'boolean' ? { fastMode: snapshot.fast } : {}),
+    ...(boundedText(snapshot.service_tier, 120) ? { serviceTier: boundedText(snapshot.service_tier, 120) } : {}),
+    running,
+    usage,
+    context,
+    ...(boundedText(snapshot.revision, 160) ? { runtimeRevision: boundedText(snapshot.revision, 160) } : {}),
+    ...(effectiveHead ? {
+      transcriptRevision: effectiveHead.transcriptRevision,
+      headCursor: effectiveHead.headCursor,
+      totalCount: effectiveHead.totalCount,
+      segmentCount: effectiveHead.segmentCount,
+      lineageComplete: effectiveHead.lineageComplete,
+    } : {}),
+    observedAt: boundedWholeNumber(snapshot.observed_at) || cache.receivedAt,
+    freshness: cache.stale ? 'stale' : 'fresh',
+  }
 }
 
 function sessionIdFromRecord(session: Record<string, unknown>): string | undefined {
@@ -2840,10 +2974,19 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       features: {
         sessions: {
           reconcile: sessionResourcesAvailable,
-          messageCursorPage: sessionResourcesAvailable,
+          // Cursor paging over a legacy `/messages` response causes the
+          // Router to re-read the entire physical transcript for every page.
+          // Advertise it only when the Gateway can bound the read-plane page.
+          messageCursorPage:
+            gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions.message-page') ||
+            gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions.lineage-history'),
           messagePageTransportBounded:
             gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions.message-page') ||
             gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions.lineage-history'),
+          transcriptSync: gatewayAdvertisesCapability(
+            payload.hermesAgentId,
+            'sessions.transcript-sync-v1',
+          ),
           lineageHistory: gatewayAdvertisesCapability(
             payload.hermesAgentId,
             'sessions.lineage-history',
@@ -2888,6 +3031,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           runtimeStatus: gatewayAdvertisesCapability(
             payload.hermesAgentId,
             'runtime.status',
+          ),
+          runtimeSummary: gatewayAdvertisesCapability(
+            payload.hermesAgentId,
+            'runtime.summary-v1',
           ),
         },
         notifications: {
@@ -3147,7 +3294,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return
   }
 
-  const sessionActionMatch = pathname.match(/^\/bridge\/sessions\/([^/]+)\/(raw|messages|rename|fork|branch|metadata|model|usage|context|runtime|archive|delete)$/)
+  const sessionActionMatch = pathname.match(/^\/bridge\/sessions\/([^/]+)\/(raw|messages|sync|rename|fork|branch|metadata|model|usage|context|runtime|archive|delete)$/)
   if (sessionActionMatch && request.method === 'GET' && sessionActionMatch[2] === 'raw') {
     await handleBridgeRawSession(request, response, payload, url, sessionActionMatch[1])
     return
@@ -3166,6 +3313,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         timeoutMs: 6_000,
       })
     }
+    const head = transcriptHeadSnapshot(payload.hermesAgentId, clientSessionId)
     sendJson(response, 200, {
       ...snapshot.snapshot,
       session_id: clientSessionId,
@@ -3174,7 +3322,120 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         stale: snapshot.stale,
         received_at: snapshot.receivedAt,
       },
+      summary: projectRuntimeSummary(
+        clientSessionId,
+        hermesSessionId,
+        snapshot.snapshot,
+        { stale: snapshot.stale, receivedAt: snapshot.receivedAt },
+        head,
+      ),
     })
+    return
+  }
+
+  if (sessionActionMatch && request.method === 'GET' && sessionActionMatch[2] === 'sync') {
+    if (!gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions.transcript-sync-v1')) {
+      sendUnsupportedGatewayOperation(response, 'session transcript sync')
+      return
+    }
+    const clientSessionId = decodeURIComponent(sessionActionMatch[1])
+    const readSessionId = sessionReadTarget(payload.hermesAgentId, clientSessionId)
+    const baseRevision = url.searchParams.get('baseRevision') || ''
+    const headCursor = url.searchParams.get('headCursor') || ''
+    const parsedLimit = Number(url.searchParams.get('limit') || '50')
+    if (baseRevision && !isSessionHistoryRevision(baseRevision)) {
+      sendJson(response, 400, { error: 'Transcript revision is invalid', code: 'validation_error' })
+      return
+    }
+    if (headCursor && !boundedText(headCursor, 512)) {
+      sendJson(response, 400, { error: 'Transcript cursor is invalid', code: 'validation_error' })
+      return
+    }
+    if (!Number.isSafeInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 50) {
+      sendJson(response, 400, { error: 'Transcript sync limit is invalid', code: 'validation_error' })
+      return
+    }
+    const startedAt = Date.now()
+    const syncKey = [
+      payload.hermesAgentId,
+      readSessionId,
+      baseRevision || '-',
+      headCursor || '-',
+      String(parsedLimit),
+    ].join(':')
+    let requestPromise = transcriptSyncInFlight.get(syncKey)
+    if (!requestPromise) {
+      requestPromise = proxyViaGateway(payload, 'api/ws', {
+        method: 'POST',
+        body: gatewayRpcBody('session.transcript-sync', {
+          session_id: readSessionId,
+          ...(baseRevision ? { base_revision: baseRevision } : {}),
+          ...(headCursor ? { head_cursor: headCursor } : {}),
+          limit: parsedLimit,
+        }, sessionMessagesProxyTimeoutMs),
+        contentType: 'application/json',
+        sourceHeaders: request.headers,
+        timeoutMs: sessionMessagesProxyTimeoutMs,
+      })
+      transcriptSyncInFlight.set(syncKey, requestPromise)
+      void requestPromise.finally(() => {
+        if (transcriptSyncInFlight.get(syncKey) === requestPromise) {
+          transcriptSyncInFlight.delete(syncKey)
+        }
+      }).catch(() => undefined)
+    }
+    const proxied = await requestPromise
+    logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge session transcript sync received', {
+      ...proxiedLogContext(proxied, undefined, startedAt),
+      sessionId: clientSessionId,
+    })
+    if (proxiedStatus(proxied) < 200 || proxiedStatus(proxied) >= 300) {
+      sendGatewayResponse(response, proxied.response)
+      return
+    }
+    const sync = asRecord(jsonPayloadFromProxied(proxied))
+    const mode = sync?.mode
+    // The Gateway RPC result is camelCase. Keep the public response in the
+    // exact same shape; only the WSS request params remain snake_case.
+    const transcriptRevision = boundedText(sync?.transcriptRevision, 160)
+    const returnedHeadCursor = boundedText(sync?.headCursor, 512)
+    const totalCount = boundedWholeNumber(sync?.totalCount)
+    const segmentCount = boundedWholeNumber(sync?.segmentCount)
+    if (
+      (mode !== 'not_modified' && mode !== 'delta' && mode !== 'reset_required') ||
+      !transcriptRevision || !returnedHeadCursor || totalCount === undefined || segmentCount === undefined
+    ) {
+      throw Object.assign(new Error('Gateway transcript sync response is invalid'), {
+        code: 'gateway_contract_invalid',
+        statusCode: 502,
+      })
+    }
+    const syncPayload = sync as Record<string, unknown>
+    const responseBody: Record<string, unknown> = {
+      mode,
+      transcriptRevision,
+      headCursor: returnedHeadCursor,
+      totalCount,
+      segmentCount,
+      lineageComplete: syncPayload.lineageComplete === true,
+    }
+    if (mode === 'delta') {
+      const upserts = Array.isArray(syncPayload.upserts) ? syncPayload.upserts.slice(0, parsedLimit) : []
+      const removedIds = Array.isArray(syncPayload.removedIds)
+        ? syncPayload.removedIds.filter(value => typeof value === 'string' && value.length > 0 && value.length <= 256).slice(0, parsedLimit)
+        : []
+      responseBody.upserts = upserts
+      responseBody.removedIds = removedIds
+    }
+    cacheTranscriptHeadSnapshot(payload.hermesAgentId, clientSessionId, {
+      transcript_revision: transcriptRevision,
+      head_cursor: returnedHeadCursor,
+      total_count: totalCount,
+      segment_count: segmentCount,
+      lineage_complete: syncPayload.lineageComplete === true,
+      committed_at: Date.now(),
+    })
+    sendJson(response, 200, responseBody)
     return
   }
 
@@ -3372,6 +3633,13 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       })
       return
     }
+    if (cursorPage) {
+      // Do not emulate cursor pages by repeatedly fetching an unbounded
+      // physical transcript from an older Gateway. Cache-first callers can
+      // still use the legacy first-page endpoint while prompting for upgrade.
+      sendUnsupportedGatewayOperation(response, 'bounded session history paging')
+      return
+    }
     const proxied = await proxyViaGateway(
       payload,
       cursorPage
@@ -3514,6 +3782,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         stale: snapshot.stale,
         received_at: snapshot.receivedAt,
       },
+      summary: projectRuntimeSummary(
+        undefined,
+        undefined,
+        snapshot.snapshot,
+        { stale: snapshot.stale, receivedAt: snapshot.receivedAt },
+      ),
     })
     return
   }

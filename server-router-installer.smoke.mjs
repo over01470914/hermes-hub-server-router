@@ -215,7 +215,11 @@ async function postJson(url, body, headers = {}) {
     signal: AbortSignal.timeout(5_000),
   })
   const payload = await response.json()
-  assert.equal(response.status, 200)
+  assert.equal(
+    response.status,
+    200,
+    `POST ${new URL(url).pathname} failed: ${JSON.stringify(payload)}`,
+  )
   return payload
 }
 

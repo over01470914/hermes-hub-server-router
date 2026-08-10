@@ -84,6 +84,7 @@ assert.equal(
 assert.equal(requiredGatewayCapability(rpc('model.options', { probe: true })), 'models.probe')
 assert.equal(requiredGatewayCapability(rpc('artifact.fetch', { sessionId: 'session_1' })), 'artifacts.read')
 assert.equal(requiredGatewayCapability(rpc('session.display-history', { session_id: 'session_1' })), 'sessions.message-page')
+assert.equal(requiredGatewayCapability(rpc('session.transcript-sync', { session_id: 'session_1' })), 'sessions.transcript-sync-v1')
 assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/model/options' }), 'models')
 assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/jobs' }), 'cron')
 assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/jobs/job_1/runs?limit=20' }), 'cron')
@@ -118,6 +119,17 @@ assert.equal(requiredGatewayCapability({ method: 'GET', path: '/api/kanban/priva
   // Older Plugins exposed only canonical lineage history.  Keep them readable
   // until their Sidecar/Plugin pair is upgraded to sessions.message-page.
   await connections.request(hermesAgentId, rpc('session.display-history', { session_id: 'session_1' }))
+  assert.equal(gateway.requestCalls, 1)
+}
+
+{
+  const gateway = new FakeRegistry(state(['sessions.transcript-sync-v1']))
+  const connections = repository(gateway)
+  await connections.request(hermesAgentId, rpc('session.transcript-sync', {
+    session_id: 'session_1',
+    base_revision: 'a'.repeat(64),
+    limit: 50,
+  }))
   assert.equal(gateway.requestCalls, 1)
 }
 
