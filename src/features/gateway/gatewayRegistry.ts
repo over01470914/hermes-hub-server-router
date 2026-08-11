@@ -619,18 +619,50 @@ function isNativeSessionEvent(event: unknown): event is string {
   return nativeSessionEvents.has(event) || nativeSessionEventPrefixes.some(prefix => event.startsWith(prefix))
 }
 
+function nativeAckError(
+  message: string,
+  code: 'gateway_update_required' | 'gateway_native_ack_invalid',
+  statusCode: 426 | 502,
+): Error {
+  return Object.assign(new Error(message), { code, statusCode })
+}
+
 function cleanNativeAck(value: Record<string, unknown>, pending: PendingNative): GatewayNativeAck {
   if (value.requestType !== pending.requestType || typeof value.accepted !== 'boolean') {
-    throw new Error('Gateway native acknowledgement shape is invalid')
+    throw nativeAckError('Gateway native acknowledgement shape is invalid', 'gateway_native_ack_invalid', 502)
+  }
+  // A legacy Gateway can reject a valid native request without echoing the
+  // Router-owned correlation fields. This cannot be trusted as an ACK, but it
+  // is actionable compatibility evidence rather than an identity conflict.
+  if (typeof value.laneId !== 'string' || !value.laneId) {
+    throw nativeAckError(
+      'Gateway native acknowledgement is missing lane correlation; update the Hermes Hub Gateway and reconnect',
+      'gateway_update_required',
+      426,
+    )
   }
   if (value.laneId !== pending.laneId) {
-    throw new Error('Gateway native acknowledgement lane mismatch')
+    throw nativeAckError('Gateway native acknowledgement lane correlation is invalid', 'gateway_native_ack_invalid', 502)
+  }
+  if (pending.submissionId && (typeof value.submissionId !== 'string' || !value.submissionId)) {
+    throw nativeAckError(
+      'Gateway native acknowledgement is missing submission correlation; update the Hermes Hub Gateway and reconnect',
+      'gateway_update_required',
+      426,
+    )
   }
   if (pending.submissionId && value.submissionId !== pending.submissionId) {
-    throw new Error('Gateway native acknowledgement submission mismatch')
+    throw nativeAckError('Gateway native acknowledgement submission correlation is invalid', 'gateway_native_ack_invalid', 502)
+  }
+  if (pending.promptId && (typeof value.promptId !== 'string' || !value.promptId)) {
+    throw nativeAckError(
+      'Gateway native acknowledgement is missing prompt correlation; update the Hermes Hub Gateway and reconnect',
+      'gateway_update_required',
+      426,
+    )
   }
   if (pending.promptId && value.promptId !== pending.promptId) {
-    throw new Error('Gateway native acknowledgement prompt mismatch')
+    throw nativeAckError('Gateway native acknowledgement prompt correlation is invalid', 'gateway_native_ack_invalid', 502)
   }
   return {
     accepted: value.accepted,

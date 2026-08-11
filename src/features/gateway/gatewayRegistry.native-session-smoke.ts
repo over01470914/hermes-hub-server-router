@@ -387,6 +387,107 @@ await assert.rejects(ambiguous, error => (
   (error as { code?: string }).code === 'gateway_submission_ambiguous'
 ))
 
+const rejectedRegistry = new GatewayRegistry()
+const rejectedSocket = attach(rejectedRegistry, 'agent_native_rejected', 'gw_native_rejected')
+const rejectedSubmission = rejectedRegistry.submitSessionByAgentId('agent_native_rejected', {
+  laneId: 'lane_rejected',
+  submissionId: 'sub_rejected',
+  deviceId: 'device_rejected',
+  text: 'must surface a native rejection',
+})
+const rejectedSubmissionFrame = rejectedSocket.sent.find(frame => frame.type === 'session_submit')
+assert.ok(rejectedSubmissionFrame)
+rejectedSocket.receive({
+  type: 'session_submit_ack',
+  id: rejectedSubmissionFrame.id,
+  requestType: 'session_submit',
+  accepted: false,
+  laneId: 'lane_rejected',
+  submissionId: 'sub_rejected',
+  code: 'native_runtime_unavailable',
+  error: 'Hermes native session runtime is unavailable',
+})
+const rejectedSubmissionAck = await rejectedSubmission
+assert.equal(rejectedSubmissionAck.accepted, false)
+assert.equal(rejectedSubmissionAck.code, 'native_runtime_unavailable')
+assert.equal(rejectedSubmissionAck.error, 'Hermes native session runtime is unavailable')
+assert.equal(rejectedSocket.readyState, 1)
+
+const rejectedPrompt = rejectedRegistry.respondPromptByAgentId('agent_native_rejected', {
+  laneId: 'lane_rejected',
+  promptId: 'prompt_rejected',
+  response: 'once',
+})
+const rejectedPromptFrame = rejectedSocket.sent.find(frame => frame.type === 'session_prompt_response')
+assert.ok(rejectedPromptFrame)
+rejectedSocket.receive({
+  type: 'session_submit_ack',
+  id: rejectedPromptFrame.id,
+  requestType: 'session_prompt_response',
+  accepted: false,
+  laneId: 'lane_rejected',
+  promptId: 'prompt_rejected',
+  code: 'prompt_not_pending',
+  error: 'Native prompt is not pending on this lane',
+})
+const rejectedPromptAck = await rejectedPrompt
+assert.equal(rejectedPromptAck.accepted, false)
+assert.equal(rejectedPromptAck.code, 'prompt_not_pending')
+assert.equal(rejectedPromptAck.error, 'Native prompt is not pending on this lane')
+assert.equal(rejectedSocket.readyState, 1)
+
+const legacyNackRegistry = new GatewayRegistry()
+const legacyNackSocket = attach(legacyNackRegistry, 'agent_native_legacy_nack', 'gw_native_legacy_nack')
+const legacyNack = legacyNackRegistry.submitSessionByAgentId('agent_native_legacy_nack', {
+  laneId: 'lane_legacy_nack',
+  submissionId: 'sub_legacy_nack',
+  deviceId: 'device_legacy_nack',
+  text: 'do not hide the required Gateway update',
+})
+const legacyNackFrame = legacyNackSocket.sent.find(frame => frame.type === 'session_submit')
+assert.ok(legacyNackFrame)
+legacyNackSocket.receive({
+  type: 'session_submit_ack',
+  id: legacyNackFrame.id,
+  requestType: 'session_submit',
+  accepted: false,
+  code: 'native_runtime_unavailable',
+  error: 'Hermes native session runtime is unavailable',
+})
+await assert.rejects(legacyNack, error => {
+  const failure = error as { code?: string; statusCode?: number; message?: string }
+  return failure.code === 'gateway_update_required'
+    && failure.statusCode === 426
+    && /update the Hermes Hub Gateway/i.test(failure.message || '')
+})
+assert.equal(legacyNackSocket.readyState, 3)
+
+const conflictingNackRegistry = new GatewayRegistry()
+const conflictingNackSocket = attach(conflictingNackRegistry, 'agent_native_conflict', 'gw_native_conflict')
+const conflictingNack = conflictingNackRegistry.submitSessionByAgentId('agent_native_conflict', {
+  laneId: 'lane_conflict',
+  submissionId: 'sub_conflict',
+  deviceId: 'device_conflict',
+  text: 'fail closed on correlation conflict',
+})
+const conflictingNackFrame = conflictingNackSocket.sent.find(frame => frame.type === 'session_submit')
+assert.ok(conflictingNackFrame)
+conflictingNackSocket.receive({
+  type: 'session_submit_ack',
+  id: conflictingNackFrame.id,
+  requestType: 'session_submit',
+  accepted: false,
+  laneId: 'lane_otherconflict',
+  submissionId: 'sub_conflict',
+  code: 'native_runtime_unavailable',
+  error: 'Hermes native session runtime is unavailable',
+})
+await assert.rejects(conflictingNack, error => {
+  const failure = error as { code?: string; statusCode?: number }
+  return failure.code === 'gateway_native_ack_invalid' && failure.statusCode === 502
+})
+assert.equal(conflictingNackSocket.readyState, 3)
+
 console.log(JSON.stringify({
   ok: true,
   checks: [
@@ -402,5 +503,8 @@ console.log(JSON.stringify({
     'command presentation is forwarded only to a capable Gateway',
     'versioned runtime snapshots retain bounded runtime controls and redact host fields',
     'Gateway disconnect produces an ambiguous result and no retry',
+    'correctly correlated rejected native acknowledgements retain their original code and keep the socket open',
+    'a legacy native rejection missing correlation produces the actionable 426 Gateway update requirement',
+    'a nonempty conflicting native acknowledgement remains a fail-closed invalid acknowledgement',
   ],
 }, null, 2))
