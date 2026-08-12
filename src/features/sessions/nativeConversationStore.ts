@@ -567,7 +567,11 @@ export class NativeConversationStore {
         if (record) this.prompts.set(this.promptKey(record.hermesAgentId, record.promptId), record)
       }
     } catch (error) {
-      logRouter('warn', 'Native conversation store load failed', { storePath: this.path }, error)
+      logRouter('warn', 'session.conversation_store.load_failed', 'Native conversation state could not be restored from disk.', {
+        outcome: 'failed',
+        errorCode: 'native_conversation_store_load_failed',
+        nextAction: 'start_with_empty_conversation_state',
+      }, error)
     }
   }
 

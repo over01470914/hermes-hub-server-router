@@ -189,7 +189,11 @@ export class SessionDirectoryCacheStore {
         if (entry) this.entries.set(this.key(entry.hermesAgentId, entry.queryKey), entry)
       }
     } catch (error) {
-      logRouter('warn', 'Session directory cache load failed', { storePath: this.path }, error)
+      logRouter('warn', 'session.directory_cache.load_failed', 'Session directory cache could not be restored from disk.', {
+        outcome: 'failed',
+        errorCode: 'session_directory_cache_load_failed',
+        nextAction: 'refresh_from_gateway',
+      }, error)
     }
   }
 

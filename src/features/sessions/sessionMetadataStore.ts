@@ -84,7 +84,11 @@ export class SessionMetadataStore {
         }
       }
     } catch (error) {
-      logRouter('warn', 'Session metadata store load failed', { storePath: this.path }, error)
+      logRouter('warn', 'session.metadata_store.load_failed', 'Session metadata could not be restored from disk.', {
+        outcome: 'failed',
+        errorCode: 'session_metadata_store_load_failed',
+        nextAction: 'start_with_empty_metadata',
+      }, error)
     }
   }
 

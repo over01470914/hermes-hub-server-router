@@ -57,7 +57,7 @@ export class PushNotificationDispatcher {
         // Provider failures are isolated from realtime event delivery.
       }
     }
-    logRouter('info', 'Push notification dispatch completed', {
+    logRouter('info', 'notification.push.dispatch_completed', 'Push notification dispatch finished.', {
       hermesAgentId: input.hermesAgentId,
       category,
       registrationCount: registrations.length,

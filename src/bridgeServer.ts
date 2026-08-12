@@ -361,7 +361,7 @@ gatewayRegistry.setSessionEventHandler(event => {
       event: event.event,
       data: event.data,
     }).catch(error => {
-      logRouter('warn', 'Push notification dispatch failed', {
+      logRouter('warn', 'notification.push.dispatch_failed', 'Push notification dispatch failed without interrupting realtime delivery.', {
         hermesAgentId: event.hermesAgentId,
         event: event.event,
       }, error)
@@ -650,7 +650,7 @@ async function proxyModelOptionsViaGateway(
     sourceHeaders,
     timeoutMs: modelCatalogProxyTimeoutMs,
   })
-  logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge available models received', {
+  logRouter(statusLevel(proxiedStatus(proxied)), 'model_catalog.gateway_completed', 'Router received the Gateway model catalog response.', {
     requestId: requestIdValue,
     path: logPath(path),
     status: proxiedStatus(proxied)
@@ -790,7 +790,7 @@ async function reconcileLegacySessionDirectory(
       if (pageRows.length === 0) return
     }
     if (!completed) {
-      logRouter('warn', 'Legacy session lineage reconciliation remains incomplete', {
+      logRouter('warn', 'session.lineage.reconcile_incomplete', 'Legacy session lineage reconciliation remains incomplete.', {
         hermesAgentId: payload.hermesAgentId,
         indexedSessionCount: rows.length,
       })
@@ -805,7 +805,7 @@ async function reconcileLegacySessionDirectory(
     // Legacy migration is best-effort and retryable. Never turn a bounded
     // canonical detail reconciliation into a failure because the one-time
     // directory classification was temporarily unavailable.
-    logRouter('warn', 'Legacy session lineage reconciliation deferred', {
+    logRouter('warn', 'session.lineage.reconcile_deferred', 'Legacy session lineage reconciliation was deferred.', {
       hermesAgentId: payload.hermesAgentId,
     }, error)
   }
@@ -1032,15 +1032,6 @@ async function proxyViaGateway(payload: { hermesAgentId: string; deviceId: strin
 } = {}): Promise<{ via: 'hermes-hub-gateway'; response: GatewayRpcResponse }> {
   requireGatewayBoundBridge(payload)
   const hermesAgentId = selectedHermesAgentId(payload)
-  logRouter('debug', 'Proxy dispatching through Hermes Hub Gateway', {
-    hermesAgentId,
-    method: init.method || 'GET',
-    path: logPath(hermesPath.startsWith('/') ? hermesPath : `/${hermesPath}`),
-    queryKeys: queryKeys(hermesPath.includes('?') ? hermesPath.slice(hermesPath.indexOf('?')) : ''),
-    bodyBytes: init.body?.length,
-    timeoutMs: init.timeoutMs
-  })
-  const startedAt = Date.now()
   const connection = await hermesGateways.request(hermesAgentId, {
     method: init.method || 'GET',
     path: hermesPath.startsWith('/') ? hermesPath : `/${hermesPath}`,
@@ -1050,13 +1041,6 @@ async function proxyViaGateway(payload: { hermesAgentId: string; deviceId: strin
     bodyBase64: init.body ? init.body.toString('base64') : undefined,
   }, init.timeoutMs)
   const response = connection.response
-  logRouter(statusLevel(response.status), 'Gateway response received', {
-    hermesAgentId,
-    method: init.method || 'GET',
-    path: logPath(hermesPath.startsWith('/') ? hermesPath : `/${hermesPath}`),
-    status: response.status,
-    latencyMs: elapsedMs(startedAt)
-  })
   return { via: 'hermes-hub-gateway', response }
 }
 
@@ -1334,7 +1318,7 @@ async function persistDiagnostics(payload: BridgeTokenPayload, input: Record<str
   const serialized = `${JSON.stringify(record, null, 2)}\n`
   await mkdir(diagnosticsDir, { recursive: true })
   await writeFile(join(diagnosticsDir, fileName), serialized, 'utf8')
-  logRouter('info', 'Diagnostics report received and persisted', {
+  logRouter('info', 'diagnostics.report.persisted', 'Router persisted the received diagnostics report.', {
     reportId,
     fileName,
     sortKey: receivedAtIso,
@@ -1353,7 +1337,7 @@ async function persistDiagnostics(payload: BridgeTokenPayload, input: Record<str
 async function readDiagnostics(reportId: string): Promise<unknown> {
   if (!isDiagnosticsReportId(reportId)) throw new Error('Invalid diagnostics report id')
   const raw = await readFile(join(diagnosticsDir, `${reportId}.json`), 'utf8')
-  logRouter('info', 'Diagnostics report read', { reportId })
+  logRouter('info', 'diagnostics.report.read', 'Router returned the diagnostics report.', { reportId })
   return JSON.parse(raw) as unknown
 }
 
@@ -1408,7 +1392,7 @@ async function handleKanbanBridge(
       plan.permission as KanbanBridgePermission
     )
     const startedAt = Date.now()
-    logRouter('info', 'Kanban bridge operation requested', {
+    logRouter('info', 'kanban.operation.started', 'Router accepted a Kanban operation.', {
       operation: plan.operation,
       permission: plan.permission,
       requestId: plan.requestId,
@@ -1425,7 +1409,7 @@ async function handleKanbanBridge(
       sourceHeaders: request.headers
     })
     const status = proxiedStatus(proxied)
-    logRouter(statusLevel(status), 'Kanban bridge operation completed', {
+    logRouter(statusLevel(status), 'kanban.operation.completed', 'Gateway completed the Kanban operation.', {
       operation: plan.operation,
       status,
       latencyMs: elapsedMs(startedAt),
@@ -1444,7 +1428,7 @@ async function handleKanbanBridge(
     return true
   } catch (error) {
     if (error instanceof KanbanBridgeRequestError) {
-      logRouter(error.status >= 500 ? 'error' : 'warn', 'Kanban bridge request rejected', {
+      logRouter(error.status >= 500 ? 'error' : 'warn', 'kanban.operation.rejected', 'Router rejected the Kanban operation before Gateway dispatch.', {
         code: error.code,
         status: error.status,
         method: request.method
@@ -1458,7 +1442,7 @@ async function handleKanbanBridge(
     const code = (error as { code?: unknown }).code === 'feature_permission_denied'
       ? 'feature_permission_denied'
       : 'kanban_bridge_failed'
-    logRouter(status >= 500 ? 'error' : 'warn', 'Kanban bridge operation failed', {
+    logRouter(status >= 500 ? 'error' : 'warn', 'kanban.operation.failed', 'Kanban operation failed at the Gateway boundary.', {
       code,
       status,
       method: request.method
@@ -1518,7 +1502,7 @@ async function handleCronBridge(
       }
     },
     log: (level: CronBridgeLogLevel, message, metadata) => {
-      logRouter(level, message, metadata)
+      logRouter(level, `cron.${message}`, 'Cron bridge operation changed stage.', metadata)
     }
   })
   const result = await adapter.handle({
@@ -1555,13 +1539,13 @@ async function fetchRawSessionPath(
   request: IncomingMessage,
   payload: Pick<BridgeTokenPayload, 'hermesAgentId' | 'deviceId'>,
   path: string,
-  logMessage: string
+  logEvent: string
 ): Promise<RawSessionFetch> {
   const startedAt = Date.now()
   const proxied = await proxyViaGateway(payload, path, { sourceHeaders: request.headers })
   const status = proxiedStatus(proxied)
   const parsed = jsonPayloadFromProxied(proxied)
-  logRouter(statusLevel(status), logMessage, {
+  logRouter(statusLevel(status), logEvent, 'Router received a raw session resource from the Gateway.', {
     ...proxiedLogContext(proxied, undefined, startedAt),
     path: logPath(path),
     queryKeys: queryKeys(path.includes('?') ? path.slice(path.indexOf('?')) : ''),
@@ -1586,7 +1570,7 @@ async function fetchRawSessionDetail(
     request,
     payload,
     `api/sessions/${sessionId}`,
-    'Bridge raw session detail received'
+    'session.raw_export.detail_received'
   )
 }
 
@@ -1601,7 +1585,7 @@ async function fetchRawSessionMessages(
     request,
     payload,
     `api/sessions/${sessionId}/messages`,
-    'Bridge raw session messages received'
+    'session.raw_export.messages_received'
   )
 }
 
@@ -1615,7 +1599,7 @@ async function handleBridgeRawSession(
   const decodedSessionId = decodeURIComponent(rawSessionId)
   const sessionId = encodeURIComponent(sessionReadTarget(payload.hermesAgentId, decodedSessionId))
   const startedAt = Date.now()
-  logRouter('info', 'Bridge raw session export requested', {
+  logRouter('info', 'session.raw_export.started', 'Router accepted a raw session export request.', {
     sessionId: decodedSessionId,
     hasProfile: Boolean((url.searchParams.get('profile') || '').trim())
   })
@@ -1634,7 +1618,7 @@ async function handleBridgeRawSession(
     messages: messagesFetch.via
   }
   if (!isUpstreamOk(sessionFetch) || !isUpstreamOk(messagesFetch)) {
-    logRouter('warn', 'Bridge raw session export failed', {
+    logRouter('warn', 'session.raw_export.failed', 'Raw session export failed at the Gateway boundary.', {
       sessionId: decodedSessionId,
       latencyMs: elapsedMs(startedAt),
       upstreamStatus
@@ -1682,7 +1666,7 @@ async function handleBridgeRawSession(
       messages: messagesFetch.payload
     }
   })
-  logRouter('info', 'Bridge raw session export completed', {
+  logRouter('info', 'session.raw_export.completed', 'Router completed the raw session export.', {
     sessionId: decodedSessionId,
     latencyMs: elapsedMs(startedAt),
     upstreamStatus
@@ -1702,7 +1686,7 @@ async function handleBridgeDeleteSession(
   const profile = (url.searchParams.get('profile') || '').trim()
   const profileQuery = profile ? `?profile=${encodeURIComponent(profile)}` : ''
   const startedAt = Date.now()
-  logRouter('warn', 'Bridge session delete requested', {
+  logRouter('warn', 'session.delete.started', 'Router accepted a session delete request.', {
     sessionId: clientSessionId,
     hasProfile: Boolean(profile)
   })
@@ -1711,7 +1695,7 @@ async function handleBridgeDeleteSession(
     `api/sessions/${sessionId}${profileQuery}`,
     { method: 'DELETE', sourceHeaders: request.headers }
   )
-  logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge session delete completed', {
+  logRouter(statusLevel(proxiedStatus(proxied)), 'session.delete.completed', 'Gateway completed the session delete request.', {
     ...proxiedLogContext(proxied, undefined, startedAt),
     sessionId: clientSessionId
   })
@@ -1722,7 +1706,8 @@ async function handleBridgeDeleteSession(
     } catch (error) {
       logRouter(
         'warn',
-        'Bridge session metadata cleanup failed after upstream delete',
+        'session.delete.metadata_cleanup_failed',
+        'Session deletion succeeded upstream but local metadata cleanup failed.',
         { sessionId: clientSessionId },
         error
       )
@@ -1771,7 +1756,7 @@ async function handleBridgeRenameSession(
   const profile = (url.searchParams.get('profile') || '').trim()
   const profileQuery = profile ? `?profile=${encodeURIComponent(profile)}` : ''
   const startedAt = Date.now()
-  logRouter('info', 'Bridge session rename requested', {
+  logRouter('info', 'session.rename.started', 'Router accepted a session rename request.', {
     sessionId: clientSessionId,
     hasProfile: Boolean(profile),
   })
@@ -1782,7 +1767,7 @@ async function handleBridgeRenameSession(
     sourceHeaders: request.headers,
   })
   const status = proxiedStatus(proxied)
-  logRouter(statusLevel(status), 'Bridge session rename completed', {
+  logRouter(statusLevel(status), 'session.rename.completed', 'Gateway completed the session rename request.', {
     ...proxiedLogContext(proxied, undefined, startedAt),
     sessionId: clientSessionId,
   })
@@ -1841,7 +1826,7 @@ async function handleBridgeForkSession(
     ? input as Record<string, unknown>
     : {}
   const startedAt = Date.now()
-  logRouter('info', 'Bridge session fork requested', {
+  logRouter('info', 'session.fork.started', 'Router accepted a session fork request.', {
     sourceSessionId,
     hasProfile: Boolean(profile)
   })
@@ -1856,7 +1841,7 @@ async function handleBridgeForkSession(
     }
   )
   const status = proxiedStatus(proxied)
-  logRouter(statusLevel(status), 'Bridge session fork completed', {
+  logRouter(statusLevel(status), 'session.fork.completed', 'Gateway completed the session fork request.', {
     ...proxiedLogContext(proxied, undefined, startedAt),
     sourceSessionId
   })
@@ -1891,7 +1876,7 @@ async function handleBridgeArchiveSession(
   const profile = (url.searchParams.get('profile') || '').trim()
   const profileQuery = profile ? `?profile=${encodeURIComponent(profile)}` : ''
   const startedAt = Date.now()
-  logRouter('info', 'Bridge session archive update requested', {
+  logRouter('info', 'session.archive.started', 'Router accepted a session archive update.', {
     sessionId: clientSessionId,
     archived,
     hasProfile: Boolean(profile)
@@ -1906,7 +1891,7 @@ async function handleBridgeArchiveSession(
       sourceHeaders: request.headers
     }
   )
-  logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge session archive update completed', {
+  logRouter(statusLevel(proxiedStatus(proxied)), 'session.archive.completed', 'Gateway completed the session archive update.', {
     ...proxiedLogContext(proxied, undefined, startedAt),
     sessionId: clientSessionId,
     archived
@@ -1921,7 +1906,7 @@ async function handleBridgeBootstrap(request: IncomingMessage, response: ServerR
   const query = normalizeBootstrapQuery(url)
   const bootstrapStartedAt = Date.now()
   const bootstrapRequestId = requestId('bootstrap')
-  logRouter('info', 'Bridge bootstrap received', {
+  logRouter('info', 'client.bootstrap.started', 'Router accepted a client bootstrap request.', {
     requestId: bootstrapRequestId,
     limit: query.limit,
     hasActiveSessionId: Boolean(query.activeSessionId),
@@ -1935,7 +1920,7 @@ async function handleBridgeBootstrap(request: IncomingMessage, response: ServerR
       Buffer.from(sessions.response.bodyBase64 || '', 'base64'),
     ),
   ))
-  logRouter(statusLevel(proxiedStatus(sessions)), 'Bridge sessions received for bootstrap', {
+  logRouter(statusLevel(proxiedStatus(sessions)), 'client.bootstrap.sessions_received', 'Router received sessions for client bootstrap.', {
     ...proxiedLogContext(sessions, bootstrapRequestId, bootstrapStartedAt),
     hasSessionsPayload: Boolean(sessionsJson)
   })
@@ -1946,7 +1931,7 @@ async function handleBridgeBootstrap(request: IncomingMessage, response: ServerR
     const messages = await proxyViaGateway(payload, `api/sessions/${sessionId}/messages`, { sourceHeaders: request.headers })
     messagesStatus = proxiedStatus(messages)
     messagesJson = jsonPayloadFromProxied(messages)
-    logRouter(statusLevel(messagesStatus), 'Bridge active session messages received for bootstrap', {
+    logRouter(statusLevel(messagesStatus), 'client.bootstrap.messages_received', 'Router received active session messages for client bootstrap.', {
       ...proxiedLogContext(messages, bootstrapRequestId, bootstrapStartedAt),
       sessionId: query.activeSessionId,
       hasMessagesPayload: Boolean(messagesJson)
@@ -1954,7 +1939,7 @@ async function handleBridgeBootstrap(request: IncomingMessage, response: ServerR
   }
   const models = await proxyModelOptionsViaGateway(payload, '', request.headers, bootstrapRequestId).catch(error => ({ error: error instanceof Error ? error.message : String(error) }))
   if ('error' in models) {
-    logRouter('warn', 'Bridge model options hint failed during bootstrap', {
+    logRouter('warn', 'client.bootstrap.model_hint_failed', 'Bootstrap continued without a model options hint.', {
       requestId: bootstrapRequestId,
       error: models.error
     })
@@ -1982,7 +1967,7 @@ async function handleBridgeBootstrap(request: IncomingMessage, response: ServerR
     upstreamStatus: { sessions: proxiedStatus(sessions), messages: messagesStatus },
     metrics: proxiedMetrics(sessions, bootstrapRequestId, bootstrapStartedAt)
   })
-  logRouter('info', 'Bridge bootstrap completed', {
+  logRouter('info', 'client.bootstrap.completed', 'Router completed the client bootstrap response.', {
     requestId: bootstrapRequestId,
     latencyMs: elapsedMs(bootstrapStartedAt),
     sessionsStatus: proxiedStatus(sessions),
@@ -2080,6 +2065,14 @@ async function handleNativeSessionMessage(
     throw Object.assign(new Error('session presentation is invalid'), { code: 'validation_error', statusCode: 400 })
   }
 
+  logRouter('info', 'session.submit.started', 'Router validated a native session submission.', {
+    hermesAgentId: payload.hermesAgentId,
+    submissionId,
+    conversationId,
+    attachmentCount: attachmentIds.length,
+    nextAction: 'dispatch_gateway',
+  })
+
   const begun = nativeConversationStore.beginSubmission(
     payload.hermesAgentId,
     submissionId,
@@ -2087,6 +2080,14 @@ async function handleNativeSessionMessage(
   )
   if (begun.duplicate) {
     if (begun.submission.state === 'accepted' && begun.submission.sessionId) {
+      logRouter('info', 'session.submit.accepted', 'Router returned the prior accepted submission without sending it again.', {
+        hermesAgentId: payload.hermesAgentId,
+        submissionId,
+        conversationId: begun.conversation.conversationId,
+        sessionId: begun.submission.sessionId,
+        outcome: 'idempotent',
+        nextAction: 'none',
+      })
       sendJson(response, 202, {
         accepted: true,
         submissionId,
@@ -2103,6 +2104,14 @@ async function handleNativeSessionMessage(
       submissionId,
       `submission_${begun.submission.state}`,
     )
+    logRouter('warn', 'session.submit.ambiguous', 'Router found an unfinished prior submission and will not replay it.', {
+      hermesAgentId: payload.hermesAgentId,
+      submissionId,
+      conversationId: begun.conversation.conversationId,
+      sessionId: begun.conversation.sessionId,
+      errorCode: 'submission_ambiguous',
+      nextAction: 'hydrate',
+    })
     throw Object.assign(new Error('Native submission outcome is ambiguous and will not be resent'), {
       code: 'submission_ambiguous',
       statusCode: 409,
@@ -2168,6 +2177,13 @@ async function handleNativeSessionMessage(
       conversationId: accepted.conversationId,
       sessionId: accepted.sessionId,
     })
+    logRouter('info', 'session.submit.accepted', 'Router accepted the native session submission for realtime delivery.', {
+      hermesAgentId: payload.hermesAgentId,
+      submissionId,
+      conversationId: accepted.conversationId,
+      sessionId: accepted.sessionId,
+      nextAction: 'await_realtime_event',
+    })
   } catch (error) {
     const code = typeof (error as { code?: unknown }).code === 'string'
       ? (error as { code: string }).code
@@ -2186,6 +2202,14 @@ async function handleNativeSessionMessage(
         submissionId,
         'gateway_submission_ambiguous',
       )
+      logRouter('warn', 'session.submit.ambiguous', 'Gateway outcome is unknown; Router published resync and will not replay the submission.', {
+        hermesAgentId: payload.hermesAgentId,
+        submissionId,
+        conversationId: ambiguous.conversationId,
+        sessionId: ambiguous.sessionId,
+        errorCode: 'submission_ambiguous',
+        nextAction: 'hydrate',
+      })
       throw Object.assign(new Error('Gateway submission outcome is ambiguous and will not be resent'), {
         code: 'submission_ambiguous',
         statusCode: 409,
@@ -2410,7 +2434,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
     const gateways = gatewayRegistry.list()
     const onlineAgents = new Set(gateways.filter(item => item.routable).map(item => item.hermesAgentId))
     const gatewayRelease = readGatewayPluginReleaseArtifact()
-    logRouter('debug', 'Router health requested', {
+    logRouter('debug', 'router.health.checked', 'Router health endpoint was checked.', {
       gatewayCount: gateways.length,
       gatewayOnlineCount: gateways.filter(item => item.online).length,
       hermesAgentCount: new Set(gateways.map(item => item.hermesAgentId)).size,
@@ -2474,7 +2498,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
       consecutiveMisses: undefined,
       error: error instanceof Error ? error.message : String(error)
     }))
-    logRouter(gateway.ok ? 'info' : 'warn', 'Router heartbeat checked', {
+    logRouter(gateway.ok ? 'info' : 'warn', 'router.heartbeat.checked', 'Router completed the Gateway heartbeat check.', {
       hermesAgentId: gateway.hermesAgentId || hermesAgentId,
       gatewayId: gateway.gatewayId,
       gatewayOnline: gateway.online,
@@ -2514,7 +2538,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
     assertPairingRateAllowed(request, 'request')
     const input = await readJson(request)
     const created = pairingStore.create(input)
-    logRouter('info', 'Pairing request created', {
+    logRouter('info', 'pairing.request.created', 'Router created a pairing request.', {
       requestId: created.requestId,
       status: created.status,
       user: created.user,
@@ -2537,7 +2561,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
 
   if (pathname === '/router/pairing/local-approval-bootstrap' && request.method === 'POST') {
     synchronizeLocalApprovalConfiguration(request)
-    logRouter('info', 'Local Gateway approval configuration synchronized', {
+    logRouter('info', 'pairing.local_approval.synchronized', 'Router synchronized local Gateway approval configuration.', {
       source: 'loopback-cli',
     })
     response.writeHead(204)
@@ -2553,7 +2577,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
       sendJson(response, 200, report)
     } catch (error) {
       if (!(error instanceof DiagnosticsPayloadError)) throw error
-      logRouter('warn', 'Diagnostics report rejected', {
+      logRouter('warn', 'diagnostics.report.rejected', 'Router rejected the diagnostics report.', {
         code: error.code,
         status: error.statusCode,
         submittedEntryCount: Array.isArray(input.entries) ? input.entries.length : undefined
@@ -2586,7 +2610,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
         gatewayId: typeof input.gatewayId === 'string' ? input.gatewayId : undefined,
         gatewayToken: typeof input.gatewayToken === 'string' ? input.gatewayToken : undefined,
       })
-    logRouter('info', 'Pairing request approved', {
+    logRouter('info', 'pairing.request.approved', 'Router approved the pairing request.', {
       requestId: approval.requestId,
       hermesAgentId: approval.hermesAgentId,
       gatewayId: approval.gatewayId,
@@ -2624,7 +2648,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
       gatewayId: typeof input.gatewayId === 'string' ? input.gatewayId : undefined,
       gatewayToken: typeof input.gatewayToken === 'string' ? input.gatewayToken : undefined,
     })
-    logRouter('info', 'Gateway enrollment accepted', {
+    logRouter('info', 'pairing.enrollment.accepted', 'Router accepted Gateway enrollment.', {
       requestId: approval.requestId,
       hermesAgentId: approval.hermesAgentId,
       gatewayId: approval.gatewayId,
@@ -2697,7 +2721,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
       hermesAgentId: claimed.hermesAgentId,
       capabilities: claimed.capabilities
     }, config, claimed.claimedAt, claimed.bridgeTokenId)
-    logRouter('info', 'Pairing request claimed', {
+    logRouter('info', 'pairing.request.claimed', 'Gateway claimed the pairing request.', {
       requestId: claimed.requestId,
       hermesAgentId: claimed.hermesAgentId,
       gatewayId: claimed.gatewayId,
@@ -2768,7 +2792,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
   const statusMatch = pathname.match(/^\/router\/pairing\/([^/]+)$/)
   if (statusMatch && request.method === 'GET') {
     const record = pairingStore.get(decodeURIComponent(statusMatch[1]))
-    logRouter(record ? 'debug' : 'warn', 'Pairing request status read', {
+    logRouter(record ? 'debug' : 'warn', 'pairing.request.status_read', 'Router returned pairing request status.', {
       requestId: decodeURIComponent(statusMatch[1]),
       found: Boolean(record),
       status: record?.status
@@ -2780,7 +2804,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
 
   if (pathname === '/router/hermes-hub-gateways' && request.method === 'GET') {
     requireOperatorApproval(request)
-    logRouter('debug', 'Hermes Hub Gateway list requested', {
+    logRouter('debug', 'gateway.directory.listed', 'Router returned the Gateway directory.', {
       gatewayCount: gatewayRegistry.list().length,
     })
     sendJson(response, 200, { gateways: gatewayRegistry.list() })
@@ -2792,7 +2816,7 @@ async function handleRouter(request: IncomingMessage, response: ServerResponse, 
     requireOperatorApproval(request)
     const gatewayId = decodeURIComponent(gatewayMatch[1])
     const state = gatewayRegistry.get(gatewayId)
-    logRouter(state ? 'debug' : 'warn', 'Hermes Hub Gateway state requested', {
+    logRouter(state ? 'debug' : 'warn', 'gateway.directory.state_read', 'Router returned Gateway state lookup.', {
       gatewayId,
       found: Boolean(state),
       online: state?.online,
@@ -2829,7 +2853,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (await handleRouter(request, response, pathname, url)) return
 
   if (pathname === '/bridge/health') {
-    logRouter('debug', 'Bridge health requested', {
+    logRouter('debug', 'bridge.health.checked', 'Bridge health endpoint was checked.', {
       gatewayOnly: true,
       insecureDevDefaults: config.insecureDevDefaults,
     })
@@ -2845,7 +2869,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (!pathname.startsWith('/bridge/')) {
-    logRouter('warn', 'HTTP route not found', { method: request.method, pathname })
+    logRouter('warn', 'http.route.not_found', 'Router did not recognize the requested HTTP route.', { method: request.method, pathname })
     sendJson(response, 404, { error: 'Not found' })
     return
   }
@@ -3096,7 +3120,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       directoryQuery.cacheKey,
     )
     if (cached && !directoryQuery.forceRefresh && isFreshSessionDirectoryEntry(cached.refreshedAt)) {
-      logRouter('info', 'Bridge sessions list served from Router cache', {
+      logRouter('info', 'session.list.cache_served', 'Router served the session list from its fresh cache.', {
         queryKeys: queryKeys(directoryQuery.upstreamSearch),
         cacheRevision: cached.revision,
         rowCount: cached.rows.length,
@@ -3104,7 +3128,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       sendJson(response, 200, sessionDirectoryCacheStore.response(cached, 'fresh'))
       return
     }
-    logRouter('info', 'Bridge sessions list requested', {
+    logRouter('info', 'session.list.started', 'Router started a session list refresh.', {
       queryKeys: queryKeys(directoryQuery.upstreamSearch),
       cacheAvailable: Boolean(cached),
       forceRefresh: directoryQuery.forceRefresh,
@@ -3116,7 +3140,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         { sourceHeaders: request.headers },
       )
       const status = proxiedStatus(proxied)
-      logRouter(statusLevel(status), 'Bridge sessions list received', proxiedLogContext(proxied, undefined, startedAt))
+      logRouter(statusLevel(status), 'session.list.gateway_completed', 'Router received the Gateway session list response.', proxiedLogContext(proxied, undefined, startedAt))
       if (status >= 200 && status < 300) {
         const projected = projectedGatewaySessionListPayload(
           proxied.response,
@@ -3143,7 +3167,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       sendGatewayResponse(response, proxied.response)
     } catch (error) {
       if (cached) {
-        logRouter('warn', 'Bridge sessions list fell back to stale Router cache', {
+        logRouter('warn', 'session.list.stale_cache_served', 'Router served stale session cache after the Gateway refresh failed.', {
           cacheRevision: cached.revision,
           rowCount: cached.rows.length,
         }, error)
@@ -3254,9 +3278,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const clientSessionId = decodeURIComponent(sessionGetMatch[1])
     const sessionId = encodeURIComponent(sessionReadTarget(payload.hermesAgentId, clientSessionId))
     const startedAt = Date.now()
-    logRouter('info', 'Bridge session detail requested', { sessionId: decodeURIComponent(sessionGetMatch[1]) })
+    logRouter('info', 'session.detail.started', 'Router started a session detail request.', { sessionId: decodeURIComponent(sessionGetMatch[1]) })
     const proxied = await proxyViaGateway(payload, `api/sessions/${sessionId}`, { sourceHeaders: request.headers })
-    logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge session detail received', {
+    logRouter(statusLevel(proxiedStatus(proxied)), 'session.detail.completed', 'Router received the Gateway session detail response.', {
       ...proxiedLogContext(proxied, undefined, startedAt),
       sessionId: decodeURIComponent(sessionGetMatch[1])
     })
@@ -3385,7 +3409,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       }).catch(() => undefined)
     }
     const proxied = await requestPromise
-    logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge session transcript sync received', {
+    logRouter(statusLevel(proxiedStatus(proxied)), 'session.transcript_sync.completed', 'Router received the Gateway transcript synchronization response.', {
       ...proxiedLogContext(proxied, undefined, startedAt),
       sessionId: clientSessionId,
     })
@@ -3457,7 +3481,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         timeoutMs: 6_000
       })
     }
-    logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge session usage received', {
+    logRouter(statusLevel(proxiedStatus(proxied)), 'session.usage.completed', 'Router received the Gateway session usage response.', {
       ...proxiedLogContext(proxied, undefined, startedAt),
       sessionId: rawSessionId
     })
@@ -3488,7 +3512,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       )
       const estimatedContext = sessionContextMetadata(proxiedBody(sessionProxy))
       if (estimatedContext) {
-        logRouter('info', 'Bridge session context estimated from session metadata', {
+        logRouter('info', 'session.context.estimated', 'Router estimated session context from stored metadata.', {
           ...proxiedLogContext(sessionProxy, undefined, startedAt),
           sessionId
         })
@@ -3500,7 +3524,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         return
       }
     }
-    logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge session context received', {
+    logRouter(statusLevel(proxiedStatus(proxied)), 'session.context.completed', 'Router received the Gateway session context response.', {
       ...proxiedLogContext(proxied, undefined, startedAt),
       sessionId
     })
@@ -3511,7 +3535,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const sessionId = decodeURIComponent(sessionActionMatch[1])
     const input = await readJson(request)
     const record = sessionMetadataStore.set(payload.hermesAgentId, sessionId, input)
-    logRouter('info', 'Bridge session metadata updated', {
+    logRouter('info', 'session.metadata.updated', 'Router updated session metadata.', {
       sessionId,
       metadataKeys: Object.keys(input)
     })
@@ -3554,7 +3578,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
     const limit = String(cursorPage ? requestedLimit + 1 : requestedLimit)
     const startedAt = Date.now()
-    logRouter('info', 'Bridge messages receive requested', {
+    logRouter('info', 'session.messages.started', 'Router started a session message read.', {
       sessionId: decodeURIComponent(sessionActionMatch[1]),
       offset,
       limit
@@ -3580,7 +3604,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         sourceHeaders: request.headers,
         timeoutMs: sessionMessagesProxyTimeoutMs,
       })
-      logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge lineage messages received', {
+      logRouter(statusLevel(proxiedStatus(proxied)), 'session.messages.lineage_completed', 'Router received lineage messages from the Gateway.', {
         ...proxiedLogContext(proxied, undefined, startedAt),
         sessionId: clientSessionId,
         offset: numericOffset,
@@ -3650,7 +3674,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         timeoutMs: sessionMessagesProxyTimeoutMs,
       },
     )
-    logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge messages received', {
+    logRouter(statusLevel(proxiedStatus(proxied)), 'session.messages.completed', 'Router received session messages from the Gateway.', {
       ...proxiedLogContext(proxied, undefined, startedAt),
       sessionId: decodeURIComponent(sessionActionMatch[1]),
       offset,
@@ -3755,10 +3779,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (pathname === '/bridge/hermes/available-models' && request.method === 'GET') {
     const startedAt = Date.now()
-    logRouter('info', 'Bridge available models requested', { queryKeys: queryKeys(search) })
+    logRouter('info', 'model_catalog.refresh_started', 'Router started a model catalog refresh.', { queryKeys: queryKeys(search) })
     const result = await proxyModelOptionsViaGateway(payload, search, request.headers)
     const proxied = result.proxied
-    logRouter(statusLevel(proxiedStatus(proxied)), 'Bridge available models completed', {
+    logRouter(statusLevel(proxiedStatus(proxied)), 'model_catalog.refresh_completed', 'Router completed the model catalog refresh.', {
       ...proxiedLogContext(proxied, undefined, startedAt),
       upstreamPath: logPath(result.path)
     })
@@ -3797,7 +3821,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return
   }
 
-  logRouter('warn', 'HTTP route not found', { method: request.method, pathname })
+  logRouter('warn', 'http.route.not_found', 'Router did not recognize the requested HTTP route.', { method: request.method, pathname })
   sendJson(response, 404, { error: 'Not found' })
 }
 
@@ -3812,7 +3836,7 @@ const server = createServer((request, response) => {
       : /pairing|token|expired|signature|Missing|Invalid|Unknown|not found/i.test(message)
         ? 401
         : 500)
-    logRouter(status >= 500 ? 'error' : 'warn', 'HTTP request failed', {
+    logRouter(status >= 500 ? 'error' : 'warn', 'http.request.failed', 'Router request handling failed.', {
       method: request.method,
       pathname: getPath(request).pathname,
       status
@@ -3853,7 +3877,7 @@ server.on('upgrade', (request, socket, head) => {
           afterCursor,
           expiresAtMs: payload.exp > 0 ? payload.exp * 1000 : undefined
         })
-        logRouter('info', 'Client realtime WebSocket connected', {
+        logRouter('info', 'client.realtime.connected', 'Client realtime WebSocket connected.', {
           clientId,
           hermesAgentId: payload.hermesAgentId,
           replayed: attached.replayed,
@@ -3861,7 +3885,7 @@ server.on('upgrade', (request, socket, head) => {
           subscriberCount: clientEventHub.subscriberCount
         })
         ws.once('close', () => {
-          logRouter('info', 'Client realtime WebSocket disconnected', {
+          logRouter('info', 'client.realtime.disconnected', 'Client realtime WebSocket disconnected.', {
             clientId,
             hermesAgentId: payload.hermesAgentId,
             subscriberCount: clientEventHub.subscriberCount
@@ -3873,7 +3897,7 @@ server.on('upgrade', (request, socket, head) => {
         ? (error as { statusCode: number }).statusCode
         : 401
       const reason = status === 400 ? 'Bad Request' : 'Unauthorized'
-      logRouter('warn', 'Client realtime WebSocket upgrade rejected', { status }, error)
+      logRouter('warn', 'client.realtime.upgrade_rejected', 'Router rejected the client realtime WebSocket upgrade.', { status }, error)
       socket.write(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\n\r\n`)
       socket.destroy()
     }
@@ -3881,7 +3905,7 @@ server.on('upgrade', (request, socket, head) => {
   }
   const gatewayMatch = pathname.match(/^\/router\/hermes-hub-gateways\/([^/]+)\/stream$/)
   if (!gatewayMatch) {
-    logRouter('warn', 'WebSocket upgrade rejected for unknown path', { pathname })
+    logRouter('warn', 'websocket.upgrade.unknown_path', 'Router rejected a WebSocket upgrade for an unknown path.', { pathname })
     socket.destroy()
     return
   }
@@ -3891,7 +3915,7 @@ server.on('upgrade', (request, socket, head) => {
     const token = bearerToken(request.headers.authorization) || ''
     const record = pairingStore.verifyGateway(gatewayId, token)
     gatewayWss.handleUpgrade(request, socket, head, ws => {
-      logRouter('info', 'Hermes Hub Gateway WebSocket upgrade accepted', {
+      logRouter('info', 'gateway.connection.upgrade_accepted', 'Router accepted the Gateway WebSocket upgrade.', {
         gatewayId,
         hermesAgentId: record.hermesAgentId,
         connectionKind: 'hermes-hub-gateway',
@@ -3902,7 +3926,7 @@ server.on('upgrade', (request, socket, head) => {
       gatewayRegistry.attach(ws, record)
     })
   } catch (error) {
-    logRouter('warn', 'Hermes Hub Gateway WebSocket upgrade rejected', {
+    logRouter('warn', 'gateway.connection.upgrade_rejected', 'Router rejected the Gateway WebSocket upgrade.', {
       gatewayId: gatewayId || '[invalid-path-segment]'
     }, error)
     socket.destroy()
@@ -3911,12 +3935,12 @@ server.on('upgrade', (request, socket, head) => {
 
 server.on('error', error => {
   const code = (error as NodeJS.ErrnoException).code || 'listen_failed'
-  logRouter('error', 'Hermes Hub router failed to listen', { host, port, code }, error)
+  logRouter('error', 'router.listen.failed', 'Router failed to bind its listening socket.', { host, port, errorCode: code }, error)
   process.exitCode = 1
 })
 
 server.listen(port, host, () => {
-  logRouter('info', 'Hermes Hub router listening', {
+  logRouter('info', 'router.listen.started', 'Router listening socket is ready.', {
     host,
     port,
     routerUrl,

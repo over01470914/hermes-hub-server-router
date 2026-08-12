@@ -810,6 +810,7 @@ function queryKeys(path: string): string[] {
 
 export class GatewayRegistry {
   private gateways = new Map<string, TrackedGateway>()
+  private readonly firstSessionEventBySubmission = new Set<string>()
   private sessionEventHandler?: (event: GatewaySessionEvent) => boolean
   private globalEventHandler?: (event: GatewayGlobalEvent) => void
   private runtimeSnapshotHandler?: (snapshot: GatewayRuntimeSnapshot) => void
@@ -838,11 +839,12 @@ export class GatewayRegistry {
     const now = nowSeconds()
     const existing = this.gateways.get(record.gatewayId)
     if (existing?.socket && existing.socket.readyState <= 1) {
-      logRouter('warn', 'Gateway socket superseded', {
+      logRouter('warn', 'gateway.connection.reconnecting', 'A newer Gateway connection replaces the prior socket.', {
         gatewayId: record.gatewayId,
         hermesAgentId: record.hermesAgentId,
         gatewayConnectionId: existing.gatewayConnectionId,
-        previousInFlightRpc: existing.inFlightRpc
+        previousInFlightRpc: existing.inFlightRpc,
+        nextAction: 'reconnect',
       })
       existing.socket.close(4000, 'superseded by new gateway socket')
     }
@@ -872,14 +874,13 @@ export class GatewayRegistry {
       pendingRuntimeSnapshots: new Map(),
     }
     this.gateways.set(record.gatewayId, state)
-    logRouter('info', 'Gateway attached', {
+    logRouter('info', 'gateway.connection.started', 'Gateway transport connected and awaits the authenticated hello.', {
       gatewayId: record.gatewayId,
       hermesAgentId: record.hermesAgentId,
       gatewayConnectionId: state.gatewayConnectionId,
       gatewayCredentialState: state.gatewayCredentialState,
       requestId: record.requestId,
-      user: record.user,
-      deviceName: record.deviceName
+      nextAction: 'none',
     })
     let detached = false
     const detach = (reason: string, closeCode?: number, closeReason?: string): void => {
@@ -897,17 +898,24 @@ export class GatewayRegistry {
         state.gatewayConnectionId,
         reason,
       )
-      logRouter('warn', 'Gateway disconnected', {
+      logRouter(
+        state.pendingNative.size > 0 ? 'warn' : 'info',
+        'gateway.connection.closed',
+        state.pendingNative.size > 0
+          ? 'Gateway transport closed; pending native submissions remain ambiguous.'
+          : 'Gateway transport closed with no pending native submission.',
+        {
         gatewayId: state.gatewayId,
         hermesAgentId: state.hermesAgentId,
         gatewayConnectionId: state.gatewayConnectionId,
         closeCode,
-        closeReason,
         pendingRpc: state.pending.size,
         pendingHeartbeats: state.pendingHeartbeats.size,
         pendingNative: state.pendingNative.size,
         pendingRuntimeSnapshots: state.pendingRuntimeSnapshots.size,
-      })
+        nextAction: state.pendingNative.size > 0 ? 'hydrate' : 'reconnect',
+        },
+      )
       for (const [id, pending] of state.pending.entries()) {
         clearTimeout(pending.timeout)
         pending.reject(Object.assign(new Error(reason), {
@@ -944,7 +952,7 @@ export class GatewayRegistry {
       try {
         this.handleMessage(state, data)
       } catch (error) {
-        logRouter('warn', 'Gateway message handler failed', {
+        logRouter('warn', 'gateway.message.handle_failed', 'Gateway frame handling failed; Router detached the transport.', {
           gatewayId: state.gatewayId,
           hermesAgentId: state.hermesAgentId,
           gatewayConnectionId: state.gatewayConnectionId,
@@ -954,7 +962,7 @@ export class GatewayRegistry {
       }
     })
     socket.on('error', error => {
-      logRouter('warn', 'Gateway socket error', {
+      logRouter('warn', 'gateway.connection.socket_failed', 'Gateway transport reported a socket error.', {
         gatewayId: state.gatewayId,
         hermesAgentId: state.hermesAgentId,
         gatewayConnectionId: state.gatewayConnectionId,
@@ -964,11 +972,12 @@ export class GatewayRegistry {
     })
     state.helloTimeout = setTimeout(() => {
       if (state.online || state.socket?.readyState !== 1) return
-      logRouter('warn', 'Gateway hello timed out', {
+      logRouter('warn', 'gateway.handshake.failed', 'Gateway did not complete its hello before the connection deadline.', {
         gatewayId: state.gatewayId,
         hermesAgentId: state.hermesAgentId,
         gatewayConnectionId: state.gatewayConnectionId,
         timeoutMs: this.options.helloTimeoutMs,
+        nextAction: 'reconnect',
       })
       state.socket.close(4408, 'gateway hello timeout')
     }, this.options.helloTimeoutMs)
@@ -983,7 +992,7 @@ export class GatewayRegistry {
       protocols: this.options.protocols
     }), error => {
       if (!error) return
-      logRouter('warn', 'Gateway ready frame failed', {
+      logRouter('warn', 'gateway.handshake.ready_send_failed', 'Router could not send the Gateway ready frame.', {
         gatewayId: state.gatewayId,
         hermesAgentId: state.hermesAgentId,
         gatewayConnectionId: state.gatewayConnectionId,
@@ -1035,7 +1044,7 @@ export class GatewayRegistry {
     return new Promise<GatewayRuntimeSnapshot>((resolve, reject) => {
       const timeout = setTimeout(() => {
         state.pendingRuntimeSnapshots.delete(id)
-        logRouter('warn', 'Gateway runtime snapshot timed out', {
+        logRouter('warn', 'gateway.runtime_snapshot.timed_out', 'Gateway runtime snapshot did not arrive before the deadline.', {
           hermesAgentId,
           requestId: id,
           hasSession: Boolean(sessionId),
@@ -1130,8 +1139,10 @@ export class GatewayRegistry {
         state.online = false
         state.agentOnline = false
         logRouter('warn', state.gatewayId === reservation.gatewayId
-          ? 'Gateway activation reservation changed before runtime commit'
-          : 'Gateway credential connection revoked after rotation', {
+          ? 'gateway.credential.activation_invalidated'
+          : 'gateway.credential.connection_revoked', state.gatewayId === reservation.gatewayId
+          ? 'Gateway activation reservation changed before runtime commit.'
+          : 'Gateway credential connection was revoked after rotation.', {
           gatewayId: state.gatewayId,
           hermesAgentId: state.hermesAgentId,
           gatewayConnectionId: state.gatewayConnectionId,
@@ -1147,7 +1158,7 @@ export class GatewayRegistry {
                 : 'gateway credential rotated',
             )
           } catch (error) {
-            logRouter('warn', 'Gateway quarantine close failed', {
+            logRouter('warn', 'gateway.quarantine.close_failed', 'Router could not close the quarantined Gateway transport.', {
               gatewayId: state.gatewayId,
               hermesAgentId: state.hermesAgentId,
               gatewayConnectionId: state.gatewayConnectionId,
@@ -1162,7 +1173,7 @@ export class GatewayRegistry {
       }
 
       if (!candidateOpen || !candidate) {
-        logRouter('warn', 'Gateway credential runtime activation requires claim retry', {
+        logRouter('warn', 'gateway.credential.activation_deferred', 'Gateway credential activation requires a new claim attempt.', {
           gatewayId: reservation.gatewayId,
           hermesAgentId: reservation.hermesAgentId,
           gatewayConnectionId: reservation.gatewayConnectionId,
@@ -1182,7 +1193,7 @@ export class GatewayRegistry {
         candidate.gatewayConnectionId,
       )
       const gateway = this.publicState(candidate)
-      logRouter('info', 'Gateway credential promoted to active route', {
+      logRouter('info', 'gateway.credential.activated', 'Gateway credential became the active route.', {
         gatewayId: candidate.gatewayId,
         hermesAgentId: candidate.hermesAgentId,
         gatewayConnectionId: candidate.gatewayConnectionId,
@@ -1215,7 +1226,7 @@ export class GatewayRegistry {
           }
         }
       }
-      logRouter('error', 'Gateway credential runtime activation failed safely', {
+      logRouter('error', 'gateway.credential.activation_failed', 'Gateway credential activation failed without replacing the active route.', {
         gatewayId: reservation.gatewayId,
         hermesAgentId: reservation.hermesAgentId,
         gatewayConnectionId: reservation.gatewayConnectionId,
@@ -1296,14 +1307,15 @@ export class GatewayRegistry {
     const id = `rpc_${randomUUID()}`
     const startedAt = Date.now()
     const message = JSON.stringify({ type: 'rpc_request', id, ...payload, timeoutMs })
-    logRouter('info', 'Gateway RPC request sent', {
+    logRouter('info', 'gateway.rpc.request_sent', 'Router dispatched an RPC to the routable Gateway.', {
       hermesAgentId,
       requestId: id,
       method: payload.method,
       path: logPath(payload.path),
       queryKeys: queryKeys(payload.path),
       timeoutMs,
-      bodyBase64Bytes: payload.bodyBase64?.length
+      bodyBase64Bytes: payload.bodyBase64?.length,
+      nextAction: 'none',
     })
     return new Promise<GatewayRpcResponse>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -1318,14 +1330,16 @@ export class GatewayRegistry {
           startedAt,
           cancelDispatched,
         })
-        logRouter('warn', 'Gateway RPC timed out', {
+        logRouter('warn', 'gateway.rpc.failed', 'Gateway RPC timed out; generic cancellation is handled separately when supported.', {
           hermesAgentId,
           requestId: id,
           method: payload.method,
           path: logPath(payload.path),
           queryKeys: queryKeys(payload.path),
           timeoutMs,
-          latencyMs: elapsedMs(startedAt)
+          durationMs: elapsedMs(startedAt),
+          errorCode: 'gateway_rpc_timeout',
+          nextAction: cancelDispatched ? 'none' : 'user_action_required',
         })
         if (cancelDispatched) {
           const cancelMessage = JSON.stringify({ type: 'rpc_cancel', id })
@@ -1343,9 +1357,11 @@ export class GatewayRegistry {
                 gatewayConnectionId: state.gatewayConnectionId,
                 requestId: id,
               })
-              logRouter('warn', 'Gateway RPC cancel dispatch failed', {
+              logRouter('warn', 'gateway.rpc.cancelled', 'Router could not dispatch the supported generic RPC cancellation.', {
                 hermesAgentId,
                 requestId: id,
+                errorCode: 'gateway_rpc_cancel_failed',
+                nextAction: 'user_action_required',
               }, error)
             })
           }
@@ -1362,12 +1378,15 @@ export class GatewayRegistry {
         clearTimeout(timeout)
         state.pending.delete(id)
         state.inFlightRpc = state.pending.size + state.pendingNative.size
-        logRouter('warn', 'Gateway RPC send failed', {
+        logRouter('warn', 'gateway.rpc.failed', 'Router could not send the RPC to the connected Gateway.', {
           hermesAgentId,
           requestId: id,
           method: payload.method,
           path: logPath(payload.path),
-          queryKeys: queryKeys(payload.path)
+          queryKeys: queryKeys(payload.path),
+          durationMs: elapsedMs(startedAt),
+          errorCode: 'gateway_rpc_send_failed',
+          nextAction: 'reconnect',
         }, error)
         reject(error)
       })
@@ -1484,7 +1503,12 @@ export class GatewayRegistry {
     const id = `native_${randomUUID()}`
     const startedAt = Date.now()
     const message = JSON.stringify({ type: requestType, id, ...payload })
-    logRouter('info', 'Gateway native session request sent', {
+    const story = requestType === 'session_submit'
+      ? 'session.submit'
+      : 'session.prompt_response'
+    logRouter('info', `${story}.request_sent`, requestType === 'session_submit'
+      ? 'Router dispatched the native session submission to Gateway.'
+      : 'Router dispatched the native prompt response to Gateway.', {
       hermesAgentId,
       requestId: id,
       requestType,
@@ -1492,6 +1516,7 @@ export class GatewayRegistry {
       submissionId: correlation.submissionId,
       promptId: correlation.promptId,
       timeoutMs,
+      nextAction: 'await_gateway_ack',
     })
     return new Promise<GatewayNativeAck>((resolve, reject) => {
       const rejectAmbiguous = (reason: string): void => {
@@ -1500,14 +1525,16 @@ export class GatewayRegistry {
         reject(Object.assign(new Error(reason), { code: 'gateway_submission_ambiguous' }))
       }
       const timeout = setTimeout(() => {
-        logRouter('warn', 'Gateway native session request timed out ambiguously', {
+        logRouter('warn', `${story}.ambiguous`, 'Gateway acknowledgement timed out; the native request will not be replayed.', {
           hermesAgentId,
           requestId: id,
           requestType,
           laneId,
           submissionId: correlation.submissionId,
           promptId: correlation.promptId,
-          latencyMs: elapsedMs(startedAt),
+          durationMs: elapsedMs(startedAt),
+          errorCode: 'gateway_submission_ambiguous',
+          nextAction: 'hydrate',
         })
         rejectAmbiguous('Gateway native session acknowledgement timed out')
       }, timeoutMs)
@@ -1524,13 +1551,15 @@ export class GatewayRegistry {
       state.socket?.send(message, error => {
         if (!error) return
         clearTimeout(timeout)
-        logRouter('warn', 'Gateway native session send became ambiguous', {
+        logRouter('warn', `${story}.ambiguous`, 'Gateway send outcome is unknown; the native request will not be replayed.', {
           hermesAgentId,
           requestId: id,
           requestType,
           laneId,
           submissionId: correlation.submissionId,
           promptId: correlation.promptId,
+          errorCode: 'gateway_submission_ambiguous',
+          nextAction: 'hydrate',
         }, error)
         rejectAmbiguous('Gateway native session send failed ambiguously')
       })
@@ -1556,7 +1585,7 @@ export class GatewayRegistry {
         state.socket?.close(4401, 'gateway hello required')
         return
       }
-      logRouter('debug', 'Gateway non-JSON message acknowledged', {
+      logRouter('debug', 'gateway.message.non_json_ignored', 'Router ignored a non-JSON Gateway frame.', {
         hermesAgentId: state.hermesAgentId,
         receivedBytes: Buffer.byteLength(text)
       })
@@ -1564,7 +1593,7 @@ export class GatewayRegistry {
       return
     }
     if (!state.online && parsed.type !== 'hello') {
-      logRouter('warn', 'Gateway message rejected before hello', {
+      logRouter('warn', 'gateway.message.rejected_before_handshake', 'Router rejected a Gateway frame received before hello.', {
         gatewayId: state.gatewayId,
         hermesAgentId: state.hermesAgentId,
         gatewayConnectionId: state.gatewayConnectionId,
@@ -1576,7 +1605,7 @@ export class GatewayRegistry {
     if (parsed.type === 'session_submit_ack' && typeof parsed.id === 'string') {
       const pending = state.pendingNative.get(parsed.id)
       if (!pending) {
-        logRouter('warn', 'Gateway native acknowledgement ignored because request is unknown', {
+        logRouter('warn', 'session.submit.ack_unknown', 'Router ignored a native acknowledgement for an unknown request.', {
           hermesAgentId: state.hermesAgentId,
           requestId: parsed.id,
         })
@@ -1587,7 +1616,16 @@ export class GatewayRegistry {
       clearTimeout(pending.timeout)
       try {
         const acknowledgement = cleanNativeAck(parsed, pending)
-        logRouter(acknowledgement.accepted ? 'info' : 'warn', 'Gateway native acknowledgement received', {
+        const story = acknowledgement.requestType === 'session_submit'
+          ? 'session.submit'
+          : 'session.prompt_response'
+        logRouter(
+          acknowledgement.accepted ? 'info' : 'warn',
+          acknowledgement.accepted ? `${story}.accepted` : `${story}.failed`,
+          acknowledgement.accepted
+            ? 'Gateway accepted the native session request.'
+            : 'Gateway rejected the native session request before execution.',
+          {
           hermesAgentId: state.hermesAgentId,
           requestId: parsed.id,
           requestType: acknowledgement.requestType,
@@ -1595,9 +1633,11 @@ export class GatewayRegistry {
           submissionId: acknowledgement.submissionId,
           promptId: acknowledgement.promptId,
           sessionId: acknowledgement.sessionId,
-          code: acknowledgement.code,
-          latencyMs: elapsedMs(pending.startedAt),
-        })
+          errorCode: acknowledgement.code,
+          durationMs: elapsedMs(pending.startedAt),
+          nextAction: acknowledgement.accepted ? 'await_realtime_event' : 'user_action_required',
+          },
+        )
         pending.resolve(acknowledgement)
       } catch (error) {
         pending.reject(error instanceof Error ? error : new Error(String(error)))
@@ -1611,17 +1651,34 @@ export class GatewayRegistry {
         if (!this.sessionEventHandler?.(event)) {
           throw new Error('Gateway session event does not match a registered lane')
         }
-        logRouter('debug', 'Gateway native session event accepted', {
-          hermesAgentId: state.hermesAgentId,
-          gatewayId: state.gatewayId,
-          laneId: event.laneId,
-          sessionId: event.sessionId,
-          submissionId: event.submissionId,
-          eventId: event.eventId,
-          event: event.event,
-        })
+        const submissionKey = `${state.hermesAgentId}:${event.submissionId}`
+        if (!this.firstSessionEventBySubmission.has(submissionKey)) {
+          this.firstSessionEventBySubmission.add(submissionKey)
+          if (this.firstSessionEventBySubmission.size > 4096) {
+            const oldest = this.firstSessionEventBySubmission.values().next().value
+            if (oldest !== undefined) this.firstSessionEventBySubmission.delete(oldest)
+          }
+          logRouter('info', 'session.event.first_received', 'Router received the first typed event for the native submission.', {
+            hermesAgentId: state.hermesAgentId,
+            sessionId: event.sessionId,
+            submissionId: event.submissionId,
+            eventId: event.eventId,
+            nativeEvent: event.event,
+            nextAction: 'none',
+          })
+        }
+        if (event.event === 'processing.completed') {
+          this.firstSessionEventBySubmission.delete(submissionKey)
+          logRouter('info', 'session.processing.completed', 'Router observed native processing completion; the client can hydrate the canonical transcript.', {
+            hermesAgentId: state.hermesAgentId,
+            sessionId: event.sessionId,
+            submissionId: event.submissionId,
+            eventId: event.eventId,
+            nextAction: 'hydrate',
+          })
+        }
       } catch (error) {
-        logRouter('warn', 'Gateway native session event rejected', {
+        logRouter('warn', 'session.event.rejected', 'Router rejected a malformed native session event.', {
           hermesAgentId: state.hermesAgentId,
           gatewayId: state.gatewayId,
           eventId: typeof parsed.eventId === 'string' ? parsed.eventId : undefined,
@@ -1651,7 +1708,7 @@ export class GatewayRegistry {
           }
         }
         this.runtimeSnapshotHandler?.(snapshot)
-        logRouter('debug', 'Gateway runtime snapshot accepted', {
+        logRouter('debug', 'gateway.runtime_snapshot.accepted', 'Router accepted a Gateway runtime snapshot.', {
           hermesAgentId: snapshot.hermesAgentId,
           gatewayId: snapshot.gatewayId,
           scope: snapshot.scope,
@@ -1659,7 +1716,7 @@ export class GatewayRegistry {
           revision: snapshot.snapshot.revision,
         })
       } catch (error) {
-        logRouter('warn', 'Gateway runtime snapshot rejected', {
+        logRouter('warn', 'gateway.runtime_snapshot.rejected', 'Router rejected a malformed Gateway runtime snapshot.', {
           hermesAgentId: state.hermesAgentId,
           gatewayId: state.gatewayId,
         }, error)
@@ -1674,7 +1731,7 @@ export class GatewayRegistry {
           state,
         )
         state.operationalReceivedAt = Date.now()
-        logRouter('debug', 'Gateway operational snapshot accepted', {
+        logRouter('debug', 'gateway.operational_snapshot.accepted', 'Router accepted a Gateway operational snapshot.', {
           hermesAgentId: state.hermesAgentId,
           gatewayId: state.gatewayId,
           eventLoopSignal: state.operationalSnapshot.eventLoop.signal,
@@ -1682,7 +1739,7 @@ export class GatewayRegistry {
             state.operationalSnapshot.fileDescriptors.signal,
         })
       } catch (error) {
-        logRouter('warn', 'Gateway operational snapshot rejected', {
+        logRouter('warn', 'gateway.operational_snapshot.rejected', 'Router rejected a malformed Gateway operational snapshot.', {
           hermesAgentId: state.hermesAgentId,
           gatewayId: state.gatewayId,
         }, error)
@@ -1694,7 +1751,7 @@ export class GatewayRegistry {
       const sidecarTransport = state.runtime === 'hermes-hub-gateway-sidecar' && state.mode === 'sidecar'
       const identityMatches = parsed.gatewayId === state.gatewayId && parsed.hermesAgentId === state.hermesAgentId
       if (!state.online || !sidecarTransport || !identityMatches || typeof parsed.online !== 'boolean') {
-        logRouter('warn', 'Gateway Sidecar Agent status rejected', {
+        logRouter('warn', 'gateway.agent_status.rejected', 'Router rejected a malformed Gateway Agent status.', {
           gatewayId: state.gatewayId,
           hermesAgentId: state.hermesAgentId,
           gatewayConnectionId: state.gatewayConnectionId,
@@ -1720,7 +1777,7 @@ export class GatewayRegistry {
           !capabilities.includes('session.prompt-response')
         )
       ) {
-        logRouter('warn', 'Gateway Sidecar Agent contract rejected', {
+        logRouter('warn', 'gateway.agent_contract.rejected', 'Router rejected a malformed Gateway Agent contract.', {
           gatewayId: state.gatewayId,
           hermesAgentId: state.hermesAgentId,
           gatewayConnectionId: state.gatewayConnectionId,
@@ -1734,8 +1791,10 @@ export class GatewayRegistry {
       state.routable = parsed.online && state.gatewayCredentialState === 'active'
       state.lastSeenAt = nowSeconds()
       logRouter(parsed.online ? 'info' : 'warn', parsed.online
-        ? 'Gateway Sidecar Agent bridge online'
-        : 'Gateway Sidecar Agent bridge offline', {
+        ? 'gateway.agent_bridge.online'
+        : 'gateway.agent_bridge.offline', parsed.online
+        ? 'Gateway reported the Agent bridge online.'
+        : 'Gateway reported the Agent bridge offline.', {
         gatewayId: state.gatewayId,
         hermesAgentId: state.hermesAgentId,
         gatewayConnectionId: state.gatewayConnectionId,
@@ -1753,7 +1812,7 @@ export class GatewayRegistry {
         ? parsed.outcome as GatewayRpcCancelOutcome
         : undefined
       if (!outcome) {
-        logRouter('warn', 'Gateway RPC cancel acknowledgement rejected', {
+        logRouter('warn', 'gateway.rpc.cancel_ack_rejected', 'Router rejected a malformed RPC cancellation acknowledgement.', {
           hermesAgentId: state.hermesAgentId,
           requestId: parsed.id,
         })
@@ -1769,8 +1828,11 @@ export class GatewayRegistry {
       logRouter(
         classification === 'recorded' ? 'info' : 'warn',
         classification === 'recorded'
-          ? 'Gateway RPC cancel acknowledgement received'
-          : 'Gateway RPC cancel acknowledgement ignored',
+          ? 'gateway.rpc.cancel_ack_received'
+          : 'gateway.rpc.cancel_ack_ignored',
+        classification === 'recorded'
+          ? 'Router recorded the Gateway RPC cancellation acknowledgement.'
+          : 'Router ignored an uncorrelated Gateway RPC cancellation acknowledgement.',
         {
           hermesAgentId: state.hermesAgentId,
           requestId: parsed.id,
@@ -1819,14 +1881,14 @@ export class GatewayRegistry {
       try {
         const event = cleanGlobalEvent(parsed, state)
         this.globalEventHandler?.(event)
-        logRouter('debug', 'Gateway global event accepted', {
+        logRouter('debug', 'gateway.global_event.accepted', 'Router accepted a typed global event.', {
           hermesAgentId: state.hermesAgentId,
           gatewayId: state.gatewayId,
           eventId: event.eventId,
-          event: event.event,
+            nativeEvent: event.event,
         })
       } catch (error) {
-        logRouter('warn', 'Gateway global event rejected', {
+        logRouter('warn', 'gateway.global_event.rejected', 'Router rejected a malformed global event.', {
           hermesAgentId: state.hermesAgentId,
           gatewayId: state.gatewayId,
           eventId: typeof parsed.eventId === 'string' ? parsed.eventId : undefined,
@@ -1874,7 +1936,7 @@ export class GatewayRegistry {
         if (createHash('sha256').update(body).digest('hex') !== chunked.sha256) {
           throw new Error('Gateway RPC response digest mismatch')
         }
-        logRouter(chunked.status >= 400 ? 'warn' : 'info', 'Gateway chunked RPC response received', {
+        logRouter(chunked.status >= 400 ? 'warn' : 'info', 'gateway.rpc.chunk_received', 'Router received one chunk of a Gateway RPC response.', {
           hermesAgentId: state.hermesAgentId,
           requestId: parsed.id,
           status: chunked.status,
@@ -1904,8 +1966,11 @@ export class GatewayRegistry {
         logRouter(
           classification === 'late_after_timeout' ? 'info' : 'warn',
           classification === 'late_after_timeout'
-            ? 'Gateway RPC response ignored after Router timeout'
-            : 'Gateway RPC response ignored because request is unknown',
+            ? 'gateway.rpc.late_response_ignored'
+            : 'gateway.rpc.unknown_response_ignored',
+          classification === 'late_after_timeout'
+            ? 'Router ignored a Gateway RPC response that arrived after its timeout.'
+            : 'Router ignored a Gateway RPC response for an unknown request.',
           {
             hermesAgentId: state.hermesAgentId,
             requestId: parsed.id,
@@ -1919,7 +1984,7 @@ export class GatewayRegistry {
       clearTimeout(pending.timeout)
       try {
         const response = cleanRpcResponse(parsed)
-        logRouter(response.status >= 400 ? 'warn' : 'info', 'Gateway RPC response received', {
+        logRouter(response.status >= 400 ? 'warn' : 'info', 'gateway.rpc.completed', 'Router received the complete Gateway RPC response.', {
           hermesAgentId: state.hermesAgentId,
           requestId: parsed.id,
           status: response.status,
@@ -1930,7 +1995,7 @@ export class GatewayRegistry {
           metrics: { requestId: parsed.id, gatewayDispatchMs: elapsedMs(pending.startedAt), totalLatencyMs: elapsedMs(pending.startedAt), via: 'hermes-hub-gateway' }
         })
       } catch (error) {
-        logRouter('warn', 'Gateway RPC response rejected', {
+        logRouter('warn', 'gateway.rpc.response_rejected', 'Router rejected a malformed Gateway RPC response.', {
           hermesAgentId: state.hermesAgentId,
           requestId: parsed.id
         }, error)
@@ -1941,7 +2006,7 @@ export class GatewayRegistry {
     if (parsed.type === 'heartbeat_ack' && typeof parsed.id === 'string') {
       const pending = state.pendingHeartbeats.get(parsed.id)
       if (!pending) {
-        logRouter('debug', 'Gateway heartbeat ack ignored because request is unknown', {
+        logRouter('debug', 'gateway.heartbeat.ack_unknown', 'Router ignored a heartbeat acknowledgement for an unknown request.', {
           hermesAgentId: state.hermesAgentId,
           requestId: parsed.id
         })
@@ -1954,7 +2019,7 @@ export class GatewayRegistry {
         state.agentOnline = false
         state.routable = false
         state.lastSeenAt = nowSeconds()
-        logRouter('warn', 'Gateway heartbeat identity rejected', {
+        logRouter('warn', 'gateway.heartbeat.identity_rejected', 'Router rejected a heartbeat acknowledgement with mismatched identity.', {
           gatewayId: state.gatewayId,
           hermesAgentId: state.hermesAgentId,
           gatewayConnectionId: state.gatewayConnectionId,
@@ -1970,7 +2035,7 @@ export class GatewayRegistry {
       }
       state.pendingHeartbeats.delete(parsed.id)
       clearTimeout(pending.timeout)
-      logRouter('debug', 'Gateway heartbeat ack received', {
+      logRouter('debug', 'gateway.heartbeat.ack_received', 'Router received a valid Gateway heartbeat acknowledgement.', {
         hermesAgentId: state.hermesAgentId,
         requestId: parsed.id,
         latencyMs: Date.now() - pending.startedAt
@@ -1987,7 +2052,7 @@ export class GatewayRegistry {
         return
       }
       if (parsed.gatewayId !== state.gatewayId || parsed.hermesAgentId !== state.hermesAgentId) {
-        logRouter('warn', 'Gateway hello identity rejected', {
+        logRouter('warn', 'gateway.handshake.identity_rejected', 'Router rejected Gateway hello identity.', {
           gatewayId: state.gatewayId,
           hermesAgentId: state.hermesAgentId,
           gatewayConnectionId: state.gatewayConnectionId,
@@ -1999,7 +2064,7 @@ export class GatewayRegistry {
         ? parsed.protocols.filter((item): item is string => typeof item === 'string').slice(0, 8)
         : []
       if (!protocols.includes(this.options.protocol)) {
-        logRouter('warn', 'Gateway hello protocol rejected', {
+        logRouter('warn', 'gateway.handshake.protocol_rejected', 'Router rejected an unsupported Gateway protocol.', {
           gatewayId: state.gatewayId,
           hermesAgentId: state.hermesAgentId,
           gatewayConnectionId: state.gatewayConnectionId,
@@ -2020,7 +2085,7 @@ export class GatewayRegistry {
       state.capabilities = capabilities
       const sidecarTransport = state.runtime === 'hermes-hub-gateway-sidecar' && state.mode === 'sidecar'
       if (sidecarTransport && (capabilities.length > 0 || parsed.agentOnline === true)) {
-        logRouter('warn', 'Gateway Sidecar hello contract rejected', {
+        logRouter('warn', 'gateway.handshake.contract_rejected', 'Router rejected an unsupported Gateway Sidecar contract.', {
           gatewayId: state.gatewayId,
           hermesAgentId: state.hermesAgentId,
           gatewayConnectionId: state.gatewayConnectionId,
@@ -2033,7 +2098,7 @@ export class GatewayRegistry {
         !state.capabilities?.includes('session.message') ||
         !state.capabilities.includes('session.prompt-response')
       )) {
-        logRouter('warn', 'Gateway native session contract rejected', {
+        logRouter('warn', 'gateway.handshake.native_contract_rejected', 'Router rejected an unsupported native session contract.', {
           gatewayId: state.gatewayId,
           hermesAgentId: state.hermesAgentId,
           gatewayConnectionId: state.gatewayConnectionId,
@@ -2054,7 +2119,7 @@ export class GatewayRegistry {
           state.gatewayConnectionId,
         )
       }
-      logRouter('info', 'Gateway hello received', {
+      logRouter('info', 'gateway.handshake.completed', 'Router authenticated the Gateway hello.', {
         gatewayId: state.gatewayId,
         hermesAgentId: state.hermesAgentId,
         gatewayConnectionId: state.gatewayConnectionId,
@@ -2080,7 +2145,7 @@ export class GatewayRegistry {
       }))
       return
     }
-    logRouter('debug', 'Gateway message acknowledged', {
+    logRouter('debug', 'gateway.message.acknowledged', 'Router acknowledged the Gateway frame.', {
       hermesAgentId: state.hermesAgentId,
       connectionKind: state.connectionKind,
       messageType: typeof parsed.type === 'string' ? parsed.type : 'unknown',
@@ -2117,7 +2182,7 @@ export class GatewayRegistry {
         current.agentOnline = false
         current.routable = false
         current.lastSeenAt = nowSeconds()
-        logRouter('warn', 'Gateway marked offline after liveness misses', {
+        logRouter('warn', 'gateway.liveness.offline', 'Router marked the Gateway offline after bounded liveness misses.', {
           gatewayId: current.gatewayId,
           hermesAgentId,
           gatewayConnectionId,
@@ -2148,7 +2213,7 @@ export class GatewayRegistry {
     return new Promise<GatewayLivenessProbeOutcome>(resolve => {
       const timeout = setTimeout(() => {
         state.pendingHeartbeats.delete(id)
-        logRouter('warn', 'Gateway heartbeat probe timed out', {
+        logRouter('warn', 'gateway.heartbeat.timed_out', 'Gateway heartbeat acknowledgement did not arrive before the deadline.', {
           gatewayId: state.gatewayId,
           hermesAgentId: state.hermesAgentId,
           gatewayConnectionId: state.gatewayConnectionId,
@@ -2167,7 +2232,7 @@ export class GatewayRegistry {
           if (!error || !state.pendingHeartbeats.has(id)) return
           clearTimeout(timeout)
           state.pendingHeartbeats.delete(id)
-          logRouter('warn', 'Gateway heartbeat send failed', {
+          logRouter('warn', 'gateway.heartbeat.send_failed', 'Router could not send a Gateway heartbeat probe.', {
             gatewayId: state.gatewayId,
             hermesAgentId: state.hermesAgentId,
             gatewayConnectionId: state.gatewayConnectionId,
@@ -2193,7 +2258,7 @@ export class GatewayRegistry {
     )
     for (const hermesAgentId of agentIds) {
       void this.liveness.probe(hermesAgentId).catch(error => {
-        logRouter('warn', 'Gateway liveness supervisor probe failed', {
+        logRouter('warn', 'gateway.liveness.probe_failed', 'Gateway liveness supervisor could not complete its probe.', {
           hermesAgentId,
         }, error)
       })
