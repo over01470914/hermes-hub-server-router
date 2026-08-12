@@ -138,6 +138,7 @@ export interface GatewayRuntimeSnapshot {
 }
 
 export interface GatewayOperationalSnapshot {
+  version: 1 | 2
   sampledAt: number
   eventLoop: {
     sampleCount: number
@@ -166,7 +167,12 @@ export interface GatewayOperationalSnapshot {
   }
   outbound: Record<
     'control' | 'data',
-    { depth: number; oldestAgeMs: number }
+    {
+      depth: number
+      oldestAgeMs: number
+      highWaterDepth?: number
+      overflowCount?: number
+    }
   >
   rpcCancel: {
     cancelled: number
@@ -174,9 +180,34 @@ export interface GatewayOperationalSnapshot {
     alreadyCompleted: number
   }
   reconnect: {
+    count?: number
     lastAt?: number
     reason?: string
+    lastHandshakeDurationMs?: number
+    lastHandshakeOutcome?: 'connected' | 'reconnected' | 'failed' | 'unknown'
   }
+}
+
+/** A bridge-safe, cache-only view. It deliberately omits all transport IDs. */
+export interface GatewayConnectionHealthSnapshot {
+  sampledAt: number
+  stale: boolean
+  route: {
+    state: 'ready' | 'degraded' | 'offline'
+    liveness: GatewayLivenessState['kind']
+    online: boolean
+    agentOnline: boolean
+    routable: boolean
+    rttMs?: number
+    missStreak: number
+  }
+  pressure: {
+    eventLoop: 'normal' | 'warning' | 'critical' | 'unavailable'
+    fileDescriptors: 'normal' | 'warning' | 'critical' | 'unavailable'
+    controlQueue: 'normal' | 'warning' | 'critical' | 'unavailable'
+    dataQueue: 'normal' | 'warning' | 'critical' | 'unavailable'
+  }
+  recovery: { lastOutcome: 'reconnected' | 'disconnected' | 'unavailable'; lastDurationMs?: number; lastAt?: number }
 }
 
 export interface GatewayCombinedOperationalMetrics {
@@ -275,6 +306,13 @@ interface TrackedGateway extends GatewayState {
   helloTimeout?: NodeJS.Timeout
 }
 
+interface RecoveryState {
+  disconnectedAt?: number
+  lastOutcome: 'reconnected' | 'disconnected'
+  lastDurationMs?: number
+  lastAt: number
+}
+
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000)
 }
@@ -361,7 +399,7 @@ function cleanGatewayOperationalSnapshot(
   if (
     !raw ||
     raw.object !== 'hermes-hub.gateway.operational' ||
-    raw.version !== 1
+    (raw.version !== 1 && raw.version !== 2)
   ) {
     throw new Error('Gateway operational snapshot contract is invalid')
   }
@@ -386,6 +424,10 @@ function cleanGatewayOperationalSnapshot(
     cleanOutbound[name] = {
       depth: safeOperationalNumber(queue.depth, 100_000),
       oldestAgeMs: safeOperationalNumber(queue.oldestAgeMs),
+      ...(raw.version === 2 ? {
+        highWaterDepth: safeOperationalNumber(queue.highWaterDepth, 100_000),
+        overflowCount: safeOperationalNumber(queue.overflowCount, 1_000_000),
+      } : {}),
     }
   }
   const reconnectReason = safeRuntimeString(reconnect.reason, 80)
@@ -404,7 +446,14 @@ function cleanGatewayOperationalSnapshot(
   const reconnectAt = typeof reconnect.lastAt === 'number'
     ? safeOperationalNumber(reconnect.lastAt, Number.MAX_SAFE_INTEGER)
     : undefined
+  const handshakeOutcome = reconnect.lastHandshakeOutcome
+  const cleanHandshakeOutcome = handshakeOutcome === 'connected'
+    || handshakeOutcome === 'reconnected'
+    || handshakeOutcome === 'failed'
+    ? handshakeOutcome
+    : handshakeOutcome === 'unknown' ? 'unknown' : undefined
   return {
+    version: raw.version,
     sampledAt: safeOperationalNumber(
       raw.sampledAt,
       Number.MAX_SAFE_INTEGER,
@@ -442,8 +491,15 @@ function cleanGatewayOperationalSnapshot(
       alreadyCompleted: safeOperationalNumber(rpcCancel.alreadyCompleted),
     },
     reconnect: {
+      ...(raw.version === 2 ? { count: safeOperationalNumber(reconnect.count, 1_000_000) } : {}),
       ...(reconnectAt === undefined ? {} : { lastAt: reconnectAt }),
       ...(reconnectReason ? { reason: reconnectReason } : {}),
+      ...(raw.version === 2
+        ? { lastHandshakeDurationMs: safeOperationalNumber(reconnect.lastHandshakeDurationMs) }
+        : {}),
+      ...(raw.version === 2 && cleanHandshakeOutcome
+        ? { lastHandshakeOutcome: cleanHandshakeOutcome }
+        : {}),
     },
   }
 }
@@ -816,6 +872,7 @@ export class GatewayRegistry {
   private runtimeSnapshotHandler?: (snapshot: GatewayRuntimeSnapshot) => void
   private readonly runtimeSnapshots = new Map<string, GatewayRuntimeSnapshot>()
   private readonly requestTombstones = new GatewayRequestTombstones()
+  private readonly recoveryByAgent = new Map<string, RecoveryState>()
   private readonly liveness: GatewayLivenessSupervisor
   private readonly livenessTimer: NodeJS.Timeout
 
@@ -898,6 +955,11 @@ export class GatewayRegistry {
         state.gatewayConnectionId,
         reason,
       )
+      this.recoveryByAgent.set(state.hermesAgentId, {
+        disconnectedAt: Date.now(),
+        lastOutcome: 'disconnected',
+        lastAt: Date.now(),
+      })
       logRouter(
         state.pendingNative.size > 0 ? 'warn' : 'info',
         'gateway.connection.closed',
@@ -1279,6 +1341,51 @@ export class GatewayRegistry {
         ? { consecutiveMisses: liveness.consecutiveMisses }
         : {}),
       ...(error ? { error } : {}),
+    }
+  }
+
+  connectionHealthSnapshotByAgentId(hermesAgentId: string, staleAfterMs = 15_000): GatewayConnectionHealthSnapshot {
+    const heartbeat = this.heartbeatSnapshotByAgentId(hermesAgentId)
+    const state = this.gatewayForAgent(hermesAgentId)
+    const operational = state?.operationalSnapshot
+    const receivedAt = state?.operationalReceivedAt
+    const stale = !receivedAt || Date.now() - receivedAt > staleAfterMs
+    const signal = (value: 'ok' | 'warning' | 'critical' | 'unavailable' | undefined): GatewayConnectionHealthSnapshot['pressure']['eventLoop'] =>
+      value === 'ok' ? 'normal' : value || 'unavailable'
+    const queueSignal = (queue: GatewayOperationalSnapshot['outbound']['control'] | undefined): GatewayConnectionHealthSnapshot['pressure']['controlQueue'] => {
+      if (!queue) return 'unavailable'
+      if ((queue.overflowCount || 0) > 0) return 'critical'
+      if (queue.depth > 0 || queue.oldestAgeMs > 1_000) return 'warning'
+      return 'normal'
+    }
+    const recovery = this.recoveryByAgent.get(hermesAgentId)
+    return {
+      sampledAt: receivedAt || Date.now(),
+      stale,
+      route: {
+        state: heartbeat.routable && heartbeat.liveness === 'healthy'
+          ? 'ready'
+          : heartbeat.online ? 'degraded' : 'offline',
+        liveness: heartbeat.liveness || 'offline',
+        online: heartbeat.online,
+        agentOnline: heartbeat.agentOnline === true,
+        routable: heartbeat.routable === true,
+        ...(heartbeat.latencyMs === undefined ? {} : { rttMs: heartbeat.latencyMs }),
+        missStreak: heartbeat.consecutiveMisses || (heartbeat.liveness === 'offline' ? 2 : 0),
+      },
+      pressure: {
+        eventLoop: signal(operational?.eventLoop.signal),
+        fileDescriptors: signal(operational?.fileDescriptors.signal),
+        controlQueue: queueSignal(operational?.outbound.control),
+        dataQueue: queueSignal(operational?.outbound.data),
+      },
+      recovery: recovery
+        ? {
+            lastOutcome: recovery.lastOutcome,
+            ...(recovery.lastDurationMs === undefined ? {} : { lastDurationMs: recovery.lastDurationMs }),
+            lastAt: recovery.lastAt,
+          }
+        : { lastOutcome: 'unavailable' },
     }
   }
 
@@ -2113,6 +2220,13 @@ export class GatewayRegistry {
       state.online = true
       state.agentOnline = !sidecarTransport
       state.routable = state.gatewayCredentialState === 'active' && state.agentOnline
+      const recovery = this.recoveryByAgent.get(state.hermesAgentId)
+      if (recovery?.disconnectedAt !== undefined) {
+        recovery.lastOutcome = 'reconnected'
+        recovery.lastDurationMs = Math.max(0, Date.now() - recovery.disconnectedAt)
+        recovery.lastAt = Date.now()
+        recovery.disconnectedAt = undefined
+      }
       if (state.gatewayCredentialState === 'active') {
         this.liveness.recordSocketReady(
           state.hermesAgentId,

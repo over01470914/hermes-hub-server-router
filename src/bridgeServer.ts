@@ -2876,6 +2876,24 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   const payload = requirePayload(request)
 
+  if (pathname === '/bridge/connection-health' && request.method === 'GET') {
+    // This endpoint is intentionally cache-only: diagnostics polling must not
+    // create Gateway traffic or influence the liveness supervisor.
+    const health = gatewayRegistry.connectionHealthSnapshotByAgentId(
+      payload.hermesAgentId,
+    )
+    sendJson(response, 200, {
+      object: 'hermes-hub.connection-health',
+      version: 1,
+      sampledAt: health.sampledAt,
+      stale: health.stale,
+      route: health.route,
+      pressure: health.pressure,
+      recovery: health.recovery,
+    })
+    return
+  }
+
   if (pathname === '/bridge/notification-devices/current') {
     if (request.method === 'PUT') {
       if (!pushDeviceRegistry || !jpushProvider.configured) {

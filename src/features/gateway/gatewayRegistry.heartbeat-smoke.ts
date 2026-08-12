@@ -84,6 +84,47 @@ const cachedReads = Array.from(
 assert.ok(cachedReads.every(result => result.ok && result.liveness === 'healthy'))
 assert.equal(concurrentSocket.sent.length, framesAfterActiveProbe)
 
+const operationalBase = {
+  object: 'hermes-hub.gateway.operational',
+  sampledAt: Date.now(),
+  eventLoop: { sampleCount: 1, lastMs: 1, p50Ms: 1, p95Ms: 1, p99Ms: 1, signal: 'ok' },
+  fileDescriptors: { consecutiveHighSamples: 0, signal: 'ok' },
+  tasks: {},
+  semaphore: {},
+  outbound: { control: {}, data: {} },
+  rpcCancel: {},
+}
+concurrentSocket.receive({
+  type: 'operational_snapshot',
+  gatewayId: 'gw_heartbeat_a',
+  hermesAgentId: 'agent_heartbeat_a',
+  snapshot: {
+    ...operationalBase,
+    version: 2,
+    reconnect: {
+      count: 3,
+      lastHandshakeDurationMs: 42,
+      lastHandshakeOutcome: 'reconnected',
+    },
+  },
+})
+const v2Operational = concurrentRegistry.getByAgentId('agent_heartbeat_a')?.operational?.gateway
+assert.equal(v2Operational?.reconnect.lastHandshakeOutcome, 'reconnected')
+assert.equal(v2Operational?.reconnect.lastHandshakeDurationMs, 42)
+concurrentSocket.receive({
+  type: 'operational_snapshot',
+  gatewayId: 'gw_heartbeat_a',
+  hermesAgentId: 'agent_heartbeat_a',
+  snapshot: {
+    ...operationalBase,
+    version: 1,
+    reconnect: { lastHandshakeDurationMs: 99, lastHandshakeOutcome: 'reconnected' },
+  },
+})
+const v1Operational = concurrentRegistry.getByAgentId('agent_heartbeat_a')?.operational?.gateway
+assert.equal(v1Operational?.reconnect.lastHandshakeOutcome, undefined)
+assert.equal(v1Operational?.reconnect.lastHandshakeDurationMs, undefined)
+
 const timeoutRegistry = new GatewayRegistry()
 const timeoutSocket = attach(timeoutRegistry, 'agent_heartbeat_timeout', 'gw_heartbeat_timeout')
 const firstMiss = await timeoutRegistry.heartbeatByAgentId('agent_heartbeat_timeout', 20)
