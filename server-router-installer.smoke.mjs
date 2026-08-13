@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { readFileSync } from 'node:fs'
@@ -7,18 +8,40 @@ import { access, mkdir, readFile, rm, unlink, writeFile } from 'node:fs/promises
 import { createServer } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { mkdtemp } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
 const routerRoot = dirname(fileURLToPath(import.meta.url))
-const outerRoot = resolve(routerRoot, '..', '..')
-const gatewayPackageRoot = join(outerRoot, 'apps', 'hermes-hub-gateway-npm')
+const observatoryDistRoot = join(routerRoot, 'observatory')
 const installerPath = join(routerRoot, 'server-router-installer.mjs')
-const release = JSON.parse(await readFile(
-  join(gatewayPackageRoot, 'src', 'pairing-core', 'references', 'release.json'),
-  'utf8',
-))
+const gatewayPayloads = new Map([
+  ['__init__.py', Buffer.from('# standalone installer smoke\n')],
+  ['adapter.py', Buffer.from('# standalone installer smoke adapter\n')],
+  ['operational_metrics.py', Buffer.from('# standalone installer smoke metrics\n')],
+  ['outbound_writer.py', Buffer.from('# standalone installer smoke writer\n')],
+  ['protocol.py', Buffer.from('# standalone installer smoke protocol\n')],
+  ['plugin.yaml', Buffer.from('name: hermes-hub-gateway-smoke\n')],
+  ['install.mjs', Buffer.from('export const smoke = true\n')],
+])
+const gatewayManifest = Buffer.from(JSON.stringify({
+  schema: 'hermes-hub-gateway-package/v1',
+  version: '0.0.0-smoke',
+  files: [...gatewayPayloads].map(([name, body]) => ({
+    name,
+    bytes: body.length,
+    sha256: createHash('sha256').update(body).digest('hex'),
+  })),
+}) + '\n')
+const release = {
+  packageName: '@hermes-hub/gateway-smoke',
+  packageVersion: '0.0.0-smoke',
+  runtimeManifestSha256: createHash('sha256').update(gatewayManifest).digest('hex'),
+}
+const gatewayReleaseMetadata = Buffer.from(JSON.stringify({
+  schema: 'hermes-hub-gateway-release-metadata/v1',
+  ...release,
+}) + '\n')
 
 const delay = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds))
 const stage = name => console.error(`[router-installer-smoke] ${name}`)
@@ -41,9 +64,22 @@ async function readSourceFile(base, pathname, roots = {}) {
   const relative = decodeURIComponent(pathname.slice(prefix.length))
   if (!relative || relative.split('/').some(part => part === '.' || part === '..')) return null
   if (base === 'router' && relative === 'gateway-release-metadata.json') return null
+  if (base === 'router' && relative.startsWith('observatory/')) {
+    const asset = relative.slice('observatory/'.length)
+    if (!asset || asset.split('/').some(part => part === '.' || part === '..')) return null
+    try { return await readFile(join(observatoryDistRoot, asset)) } catch (error) {
+      if (error?.code === 'ENOENT') return null
+      throw error
+    }
+  }
   const root = base === 'router'
     ? roots.routerRoot || routerRoot
-    : roots.gatewayRuntimeRoot || join(gatewayPackageRoot, 'runtime')
+    : roots.gatewayRuntimeRoot
+  if (base === 'gateway' && !root) {
+    if (relative === 'package-manifest.json') return gatewayManifest
+    if (relative === 'gateway-release-metadata.json') return gatewayReleaseMetadata
+    return gatewayPayloads.get(relative) || null
+  }
   try {
     const body = await readFile(join(root, relative))
     if (base === 'gateway') {
@@ -274,6 +310,7 @@ try {
         '--gateway-package-base-url', `${mismatchedSource.baseUrl}/gateway/`,
         '--workdir', join(tempRoot, 'mismatched-runtime'),
         '--router-env', join(tempRoot, 'mismatched-runtime.env'),
+        '--offline',
         '--no-start',
         '--no-autostart',
       ]),
@@ -320,10 +357,14 @@ try {
     join(workdir, 'state', 'session-directory-cache.json'),
   )
   await access(join(workdir, 'src', 'features', 'sessions', 'sessionDirectoryCacheStore.ts'))
+  await access(join(workdir, 'observatory', 'index.html'))
+  assert.ok(source.requests.has('/router/observatory/index.html'))
 
   router = await startRouter(workdir, installedEnvironment)
   const validHealth = await waitForHealth(baseUrl, router)
   assert.deepEqual(validHealth.gatewayPlugin.release, release)
+  const productionObservatory = await fetch(`${baseUrl}/_debug/observatory/`)
+  assert.equal(productionObservatory.status, 404, 'production Router must fail closed for Observatory')
   await stopRouter(router)
   router = undefined
 

@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, extname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { WebSocketServer } from 'ws'
@@ -10,6 +10,7 @@ import { BoundedSseWriter } from './core/http/boundedSseWriter.js'
 import { routerBasePath, stripRouterBasePath } from './core/http/routerBasePath.js'
 import { resolvePublicRouterUrl } from './core/http/publicRouterUrl.js'
 import { errorMessage, logRouter, type RouterLogLevel } from './core/observability/routerLogger.js'
+import { DiagnosticsEvidenceJournal, diagnosticsEnabledFromEnvironment, observerTokenIsValid, redactDiagnosticsContent, redactedEvidenceFingerprint } from './core/observability/diagnosticsEvidence.js'
 import { readPrivateTextFileSync, writePrivateTextFileAtomicSync } from './core/persistence/privateStateFile.js'
 import { resolveRouterStatePaths } from './core/persistence/routerStatePaths.js'
 import { elapsedMs, encodeSseEvent, normalizeBootstrapQuery, requestId, sseHeaders, type GatewayRequestMetrics, type RpcStreamFrame } from './core/protocol/bridgeProtocol.js'
@@ -255,7 +256,32 @@ const debugGateway = readDebugGatewayConfig()
 if (debugGateway) pairingStore.ensureDebugGateway(debugGateway)
 const gatewayRegistry = new GatewayRegistry()
 const hermesGateways = new HermesGatewayRepository(gatewayRegistry)
-const clientEventHub = new ClientEventHub()
+const diagnosticsEnabled = diagnosticsEnabledFromEnvironment()
+const diagnosticsEnvironment = (process.env.HERMES_HUB_ENVIRONMENT || process.env.NODE_ENV || 'production').toLowerCase()
+const diagnosticsObserverTokenHash = process.env.HERMES_HUB_DIAGNOSTICS_OBSERVER_TOKEN_SHA256 || ''
+const diagnosticsProxyTokenHash = process.env.HERMES_HUB_DIAGNOSTICS_PROXY_TOKEN_SHA256 || ''
+if (diagnosticsEnabled && !/^[a-f0-9]{64}$/i.test(diagnosticsObserverTokenHash)) {
+  throw new Error('HERMES_HUB_DIAGNOSTICS_OBSERVER_TOKEN_SHA256 is required when diagnostics are enabled')
+}
+if (diagnosticsEnabled && diagnosticsEnvironment === 'staging' && !/^[a-f0-9]{64}$/i.test(diagnosticsProxyTokenHash)) {
+  throw new Error('HERMES_HUB_DIAGNOSTICS_PROXY_TOKEN_SHA256 is required for staging diagnostics')
+}
+const diagnosticsEvidence = new DiagnosticsEvidenceJournal()
+const packagedDiagnosticsWebRoot = join(dirname(fileURLToPath(import.meta.url)), '../observatory')
+const diagnosticsWebRoot = resolve(
+  process.env.HERMES_HUB_DIAGNOSTICS_WEB_ROOT ||
+    packagedDiagnosticsWebRoot,
+)
+const clientEventHub = new ClientEventHub({
+  onEgress: (event, clientId, sendIndex, encoded) => {
+    if (!diagnosticsEnabled) return
+    diagnosticsEvidence.record({
+      sourceNode: 'router', stage: 'router_egress', transport: 'websocket', direction: 'egress', outcome: 'completed',
+      clientId, sessionId: event.session_id, eventId: event.event_id, routerCursor: event.cursor, sendIndex,
+      byteCount: Buffer.byteLength(encoded, 'utf8'), fingerprint: redactedEvidenceFingerprint(encoded), detail: { event: event.event, content: redactDiagnosticsContent(event) },
+    })
+  },
+})
 const sessionMetadataStore = new SessionMetadataStore(sessionMetadataStorePath)
 const nativeConversationStore = new NativeConversationStore(nativeConversationStorePath)
 const sessionDirectoryCacheStore = new SessionDirectoryCacheStore(sessionDirectoryCacheStorePath)
@@ -3032,6 +3058,53 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   const { pathname, search, url } = getPath(request)
 
+  if (pathname.startsWith('/_debug/')) {
+    if (!diagnosticsEnabled) {
+      sendJson(response, 404, { error: 'Not found' })
+      return
+    }
+    if (
+      request.method === 'GET' &&
+      (pathname === '/_debug/observatory' || pathname.startsWith('/_debug/observatory/'))
+    ) {
+      if (diagnosticsEnvironment === 'staging' && !diagnosticsObserverRequestIsValid(request)) {
+        sendJson(response, 404, { error: 'Not found' })
+        return
+      }
+      await serveDiagnosticsObservatory(pathname, response)
+      return
+    }
+    if (!diagnosticsObserverRequestIsValid(request)) {
+      sendJson(response, 401, { error: 'Observer authentication required' })
+      return
+    }
+    if (pathname === '/_debug/api/v1/evidence' && request.method === 'GET') {
+      const limitValue = Number(url.searchParams.get('limit') || 1000)
+      sendJson(response, 200, diagnosticsEvidence.snapshot(Number.isSafeInteger(limitValue) ? limitValue : 1000))
+      return
+    }
+    if (pathname === '/_debug/api/v1/topology' && request.method === 'GET') {
+      sendJson(response, 200, {
+        topology: 'client-router-hermes-hub-gateway-agent',
+        routerInstanceId,
+        clientSubscribers: clientEventHub.subscriberCount,
+        evidence: diagnosticsEvidence.snapshot(1),
+        unsupportedHops: ['gateway_sidecar', 'gateway_plugin', 'hermes_agent'],
+      })
+      return
+    }
+    sendJson(response, 404, { error: 'Not found' })
+    return
+  }
+
+  if (diagnosticsEnabled) {
+    diagnosticsEvidence.record({
+      sourceNode: 'router', stage: 'http.request', transport: 'http', direction: 'ingress', outcome: 'started',
+      requestId: requestId(), byteCount: Number(request.headers['content-length'] || 0) || undefined,
+      detail: { method: request.method || 'GET', pathname },
+    })
+  }
+
   if (await handleRouter(request, response, pathname, url)) return
 
   if (pathname === '/bridge/health') {
@@ -4034,6 +4107,62 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   sendJson(response, 404, { error: 'Not found' })
 }
 
+function diagnosticsObserverRequestIsValid(request: IncomingMessage): boolean {
+  const authorization = bearerToken(request.headers.authorization)
+  const proxyToken = headerValue(request, 'x-hermes-hub-diagnostics-proxy')
+  return observerTokenIsValid(authorization || undefined, diagnosticsObserverTokenHash) ||
+    (diagnosticsEnvironment === 'staging' && observerTokenIsValid(proxyToken || undefined, diagnosticsProxyTokenHash))
+}
+
+function diagnosticsObserverWebSocketToken(request: IncomingMessage): string | undefined {
+  const authorization = bearerToken(request.headers.authorization)
+  if (authorization) return authorization
+  const protocols = String(request.headers['sec-websocket-protocol'] || '').split(',').map(value => value.trim()).filter(Boolean)
+  const prefix = 'hermes-hub.observer.bearer.'
+  if (protocols.length !== 1 || !protocols[0]?.startsWith(prefix)) return undefined
+  const token = protocols[0].slice(prefix.length)
+  return /^[A-Za-z0-9._-]+$/.test(token) ? token : undefined
+}
+
+async function serveDiagnosticsObservatory(pathname: string, response: ServerResponse): Promise<void> {
+  const prefix = '/_debug/observatory/'
+  const requested = pathname === '/_debug/observatory' || pathname === prefix
+    ? 'index.html'
+    : pathname.slice(prefix.length)
+  if (!requested || requested.includes('\\') || requested.includes('\0')) {
+    sendJson(response, 404, { error: 'Not found' })
+    return
+  }
+  const target = resolve(diagnosticsWebRoot, requested || 'index.html')
+  const escaped = relative(diagnosticsWebRoot, target)
+  if (!escaped || escaped.startsWith('..') || resolve(diagnosticsWebRoot, escaped) !== target) {
+    sendJson(response, 404, { error: 'Not found' })
+    return
+  }
+  try {
+    const body = await readFile(target)
+    const contentType = new Map<string, string>([
+      ['.html', 'text/html; charset=utf-8'],
+      ['.js', 'text/javascript; charset=utf-8'],
+      ['.css', 'text/css; charset=utf-8'],
+      ['.svg', 'image/svg+xml'],
+      ['.png', 'image/png'],
+      ['.woff2', 'font/woff2'],
+    ]).get(extname(target).toLowerCase()) || 'application/octet-stream'
+    response.writeHead(200, {
+      'content-type': contentType,
+      'cache-control': 'no-store',
+      'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' ws: wss:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+      'x-content-type-options': 'nosniff',
+      'x-frame-options': 'DENY',
+      'referrer-policy': 'no-referrer',
+    })
+    response.end(body)
+  } catch {
+    sendJson(response, 404, { error: 'Not found' })
+  }
+}
+
 const server = createServer((request, response) => {
   handle(request, response).catch(error => {
     const message = errorMessage(error)
@@ -4066,8 +4195,30 @@ const server = createServer((request, response) => {
 // 25 MiB body with Base64 overhead.
 const gatewayWss = new WebSocketServer({ noServer: true, maxPayload: maxGatewayWireBytes })
 const clientEventsWss = new WebSocketServer({ noServer: true })
+const diagnosticsWss = new WebSocketServer({ noServer: true })
 server.on('upgrade', (request, socket, head) => {
   const { pathname, url } = getPath(request)
+  if (pathname === '/_debug/ws/v1/evidence') {
+    const observerToken = diagnosticsObserverWebSocketToken(request)
+    const proxyToken = headerValue(request, 'x-hermes-hub-diagnostics-proxy')
+    if (!diagnosticsEnabled || !(
+      observerTokenIsValid(observerToken, diagnosticsObserverTokenHash) ||
+      (diagnosticsEnvironment === 'staging' && observerTokenIsValid(proxyToken || undefined, diagnosticsProxyTokenHash))
+    )) {
+      socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
+      socket.destroy()
+      return
+    }
+    diagnosticsWss.handleUpgrade(request, socket, head, ws => {
+      ws.send(JSON.stringify(diagnosticsEvidence.snapshot(1000)))
+      const unsubscribe = diagnosticsEvidence.subscribe(evidence => {
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'evidence', evidence }))
+      })
+      ws.once('close', unsubscribe)
+      ws.once('error', unsubscribe)
+    })
+    return
+  }
   if (pathname === '/bridge/events') {
     try {
       const payload = requireRealtimePayload(request)

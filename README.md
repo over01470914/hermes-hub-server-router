@@ -10,6 +10,11 @@ Flutter -> Router -> Hermes Hub Gateway Plugin -> Hermes Agent
 It never connects directly to Hermes, never calls a model, and has no alternate
 host transport.
 
+The same standalone repository also owns Router Observatory: a passive,
+development/staging-only website for inspecting Router-authoritative Client
+egress evidence, connected Clients, cursors, send indexes, and bounded gaps.
+See [`docs/DIAGNOSTICS.md`](docs/DIAGNOSTICS.md) for setup and security rules.
+
 ## Native session v2
 
 The Gateway WSS protocol is `hermes-hub-gateway-rpc/v2`.
@@ -46,6 +51,7 @@ From this standalone repository:
 
 ```powershell
 pnpm install
+pnpm observatory:build
 pnpm init:router
 pnpm dev
 ```
@@ -63,6 +69,29 @@ The local initializer creates it in the ignored private environment. Rotate or
 clear it only through the provided Router scripts, restart Router afterward,
 and never place it in source, arguments, logs, prompts, or
 `.workspace/local.env`.
+
+## Router Observatory
+
+The Observatory source lives in `observatory-web/`; `pnpm observatory:build`
+writes versioned static assets to `observatory/`. The Router and its installer
+serve only that local payload, so a server needs this Router repository only —
+not the outer Hermes Hub monorepo.
+
+Diagnostics are disabled by default and fail closed unless the environment is
+explicitly `development` or `staging`. A development launch requires:
+
+```powershell
+$env:HERMES_HUB_ENVIRONMENT = 'development'
+$env:HERMES_HUB_DIAGNOSTICS = '1'
+$env:HERMES_HUB_DIAGNOSTICS_OBSERVER_TOKEN_SHA256 = '<sha256-of-observer-token>'
+pnpm observatory:build
+pnpm dev
+```
+
+Open `/_debug/observatory/` below the configured Router URL. Keep the original
+observer token out of source and logs; the Router stores only its SHA-256.
+Staging additionally requires the authenticated-proxy configuration documented
+in [`docs/DIAGNOSTICS.md`](docs/DIAGNOSTICS.md). Production rejects diagnostics.
 
 The launcher uses a private PID state file, validates the recorded process
 identity before stopping it, and never kills by process name. Environment
@@ -137,12 +166,29 @@ pnpm gateway:test
 pnpm smoke:router-contract
 ```
 
+From this standalone Router repository:
+
+```powershell
+pnpm check
+pnpm observatory:check
+pnpm smoke
+node server-router-installer.smoke.mjs
+```
+
 ## Source layout
 
 ```text
 router-local-env.mjs
 router-local-env.smoke.mjs
 server-router-installer.mjs
+docs/
+  DIAGNOSTICS.md
+observatory-web/
+  src/
+  vite.config.ts
+observatory/
+  index.html
+  assets/
 src/
   bridgeServer.ts
   core/

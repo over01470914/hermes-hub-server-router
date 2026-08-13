@@ -11,6 +11,9 @@ This directory owns the public Router / bridge server.
   utilities under `src/core/`.
 - Keep `src/bridgeServer.ts` as the composition root; do not move feature
   business logic back into the application root.
+- Keep Router Observatory source under `observatory-web/` and its versioned
+  installer payload under `observatory/`. Build both from this standalone Repo;
+  do not depend on an outer Hermes Hub checkout.
 
 ## Boundary
 
@@ -43,6 +46,7 @@ For Router changes run:
 
 ```bash
 pnpm server:check
+pnpm observatory:check
 ```
 
 For native session changes, also run the Gateway contract and provide non-secret

@@ -43,6 +43,10 @@ const GATEWAY_PACKAGE_ALLOWED_PAYLOAD_FILES = Object.freeze([
   ...GATEWAY_PACKAGE_OPTIONAL_PAYLOAD_FILES,
 ])
 const MAX_RUNTIME_FILE_BYTES = 2 * 1024 * 1024
+const MAX_OBSERVATORY_INDEX_BYTES = 512 * 1024
+const MAX_OBSERVATORY_ASSET_BYTES = 2 * 1024 * 1024
+const MAX_OBSERVATORY_TOTAL_BYTES = 16 * 1024 * 1024
+const MAX_OBSERVATORY_ASSETS = 64
 const MAX_GATEWAY_MANIFEST_BYTES = 64 * 1024
 const MAX_GATEWAY_RELEASE_METADATA_BYTES = 16 * 1024
 const MAX_GATEWAY_FILE_BYTES = 2 * 1024 * 1024
@@ -55,6 +59,7 @@ const SERVER_FILES = [
   'src/core/http/routerBasePath.ts',
   'src/core/http/publicRouterUrl.ts',
   'src/core/observability/routerLogger.ts',
+  'src/core/observability/diagnosticsEvidence.ts',
   'src/core/persistence/privateStateFile.ts',
   'src/core/persistence/routerStatePaths.ts',
   'src/core/protocol/bridgeProtocol.ts',
@@ -176,6 +181,11 @@ function sourceFileUrl(sourceBase, name) {
     parsed.pathname = `${parsed.pathname.slice(0, treeIndex)}/-/git/raw/${ref}/${directory}/`
   }
   return new URL(name, parsed).toString()
+}
+
+function observatorySourceUrl(sourceBase, name) {
+  if (!/^(?:index\.html|assets\/[A-Za-z0-9._-]+)$/.test(name)) fail('Observatory asset path is invalid')
+  return new URL(`observatory/${name}`, sourceBase).toString()
 }
 
 function sourceRequestHeaders(url) {
@@ -421,6 +431,41 @@ async function downloadRuntime(baseUrl, workdir, dryRun) {
     include: ['src/**/*.ts'],
   }, null, 2) + '\n')
   writeFile(join(workdir, 'dist', 'index.html'), '<!doctype html><meta charset="utf-8"><title>Hermes Hub Router</title><body>Hermes Hub Router</body>\n')
+}
+
+function observatoryAssetsFromIndex(index) {
+  const values = [...index.matchAll(/(?:src|href)=["'](?:\/_debug\/observatory\/|\.\/)([^"'#?]+)["']/g)]
+    .map(match => match[1])
+  const assets = [...new Set(values)]
+  if (assets.length > MAX_OBSERVATORY_ASSETS || assets.some(name => !/^assets\/[A-Za-z0-9._-]+$/.test(name))) {
+    fail('Observatory index references an unsafe asset path')
+  }
+  return assets
+}
+
+async function downloadObservatory(baseUrl, workdir, dryRun) {
+  const target = join(workdir, 'observatory')
+  if (dryRun) return log(`dry-run download Observatory assets from ${baseUrl} -> ${target}`)
+  const indexBytes = await download(
+    observatorySourceUrl(baseUrl, 'index.html'),
+    MAX_OBSERVATORY_INDEX_BYTES,
+    'Observatory index',
+  )
+  const index = indexBytes.toString('utf8')
+  const assets = observatoryAssetsFromIndex(index)
+  let total = indexBytes.length
+  const fetched = new Map([['index.html', indexBytes]])
+  for (const asset of assets) {
+    const body = await download(
+      observatorySourceUrl(baseUrl, asset),
+      MAX_OBSERVATORY_ASSET_BYTES,
+      `Observatory asset ${asset}`,
+    )
+    total += body.length
+    if (total > MAX_OBSERVATORY_TOTAL_BYTES) fail('Observatory assets exceeded the download size limit')
+    fetched.set(asset, body)
+  }
+  for (const [name, body] of fetched) writeFile(join(target, name), body)
 }
 
 function exactKeys(value, expected) {
@@ -910,6 +955,8 @@ async function main() {
   }
   await downloadRuntime(config.baseUrl, config.workdir, dryRun)
   log('Router runtime download complete')
+  await downloadObservatory(config.baseUrl, config.workdir, dryRun)
+  log('Router Observatory asset download complete')
   await downloadGatewayPackage(config.gatewayPackageBaseUrl, config.workdir, dryRun)
   log('Gateway package download and verification complete')
   log('installing Router dependencies')

@@ -68,6 +68,7 @@ export interface ClientEventHubOptions {
   maxJournalScopes?: number
   maxSubscriberBufferedBytes?: number
   heartbeatIntervalMs?: number
+  onEgress?: (event: BridgeClientEvent, clientId: string, sendIndex: number, encoded: string) => void
 }
 
 const defaultMaxReplayEventsPerScope = 2048
@@ -100,6 +101,7 @@ export class ClientEventHub {
       options.heartbeatIntervalMs,
       defaultHeartbeatIntervalMs
     )
+    this.onEgress = options.onEgress
   }
 
   private readonly subscribers = new Set<Subscriber>()
@@ -110,6 +112,8 @@ export class ClientEventHub {
   private readonly maxJournalScopes: number
   private readonly maxSubscriberBufferedBytes: number
   private readonly heartbeatIntervalMs: number
+  private readonly onEgress?: ClientEventHubOptions['onEgress']
+  private readonly sendIndexByClient = new Map<string, number>()
 
   get subscriberCount(): number {
     return this.subscribers.size
@@ -185,7 +189,7 @@ export class ClientEventHub {
     for (const entry of replay) {
       const event = entry.event
       if (event.cursor <= resumeCursor) continue
-      if (!this.send(socket, event, entry.encoded)) break
+      if (!this.send(socket, event, entry.encoded, subscription.clientId)) break
       replayed += 1
     }
     this.sendCursor(socket, currentCursor)
@@ -227,7 +231,7 @@ export class ClientEventHub {
 
     for (const subscriber of this.subscribers) {
       if (subscriber.scope !== input.scope) continue
-      this.send(subscriber.socket, event, encoded)
+      this.send(subscriber.socket, event, encoded, subscriber.clientId)
     }
     return event
   }
@@ -307,7 +311,7 @@ export class ClientEventHub {
     }
   }
 
-  private send(socket: WebSocket, payload: unknown, encoded?: string): boolean {
+  private send(socket: WebSocket, payload: unknown, encoded?: string, clientId?: string): boolean {
     if (socket.readyState !== socketOpen) return false
     const data = encoded ?? JSON.stringify(payload)
     const outgoingBytes = Buffer.byteLength(data, 'utf8')
@@ -317,6 +321,16 @@ export class ClientEventHub {
     }
     try {
       socket.send(data)
+      if (clientId && isBridgeClientEvent(payload)) {
+        const sendIndex = (this.sendIndexByClient.get(clientId) || 0) + 1
+        this.sendIndexByClient.set(clientId, sendIndex)
+        try {
+          this.onEgress?.(payload, clientId, sendIndex, data)
+        } catch {
+          // Diagnostics is an optional side channel. A failed observer must
+          // never terminate or reclassify the successfully written Client frame.
+        }
+      }
       return true
     } catch {
       socket.terminate()
@@ -331,6 +345,10 @@ export class ClientEventHub {
       cursor
     })
   }
+}
+
+function isBridgeClientEvent(payload: unknown): payload is BridgeClientEvent {
+  return Boolean(payload && typeof payload === 'object' && (payload as { type?: unknown }).type === 'bridge.event')
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {

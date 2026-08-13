@@ -141,6 +141,19 @@ assert(
 )
 originHub.reset()
 
+const observerFailureHub = new ClientEventHub({
+  heartbeatIntervalMs: 60_000,
+  onEgress: () => { throw new Error('observer unavailable') },
+})
+const observerFailureSocket = new FakeSocket()
+observerFailureHub.attach(observerFailureSocket.asWebSocket(), { scope: 'observer-failure', clientId: 'observer-failure-client' })
+publish(observerFailureHub, 'observer-failure', 'still-delivered')
+assert(
+  observerFailureSocket.sent.some(message => (message as { event?: string }).event === 'message.updated'),
+  'observer failure affected the authoritative socket send',
+)
+observerFailureHub.reset()
+
 const globalHub = new ClientEventHub({ heartbeatIntervalMs: 60_000 })
 const globalEvent = globalHub.publish({
   scope: 'global-scope',
@@ -193,6 +206,7 @@ console.log(JSON.stringify({
     activeScopeReplayRetained: activeReplayAttach.replayed,
     slowSubscriberCloseCode: slowSocket.closeCode,
     originAndPeerReceivedTypedEvent: true,
+    observerFailureDidNotBlockSocketSend: true,
     pendingTailFrames: tailFrames.length,
     pendingTerminalRetained: terminalFrames[0]?.type === 'rpc_stream_end'
   }

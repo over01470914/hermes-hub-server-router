@@ -1,5 +1,11 @@
 node_modules/
 dist/
+*.tsbuildinfo
 .env
 *.log
 .hermes-hub-private/
+
+# Router Observatory is a versioned installer payload. Its source and compiled
+# assets must ship in this standalone repository together with the Router API.
+!observatory/
+!observatory/**
