@@ -16,6 +16,13 @@ function sessionIdOf(session: JsonRecord): string {
   return ''
 }
 
+function canReplyExternally(session: JsonRecord): boolean {
+  const origin = asRecord(session.origin)
+  const platform = firstString(origin, ['platform'])
+    || firstString(session, ['source', 'platform'])
+  return platform === 'telegram' || platform === 'feishu'
+}
+
 function firstString(record: JsonRecord | undefined, keys: string[]): string | undefined {
   if (!record) return undefined
   for (const key of keys) {
@@ -88,6 +95,8 @@ export function projectNativeSessionDetailPayload(
         native: false,
         readOnly: true,
         read_only: true,
+        canReplyExternally: canReplyExternally(detail.session),
+        can_reply_externally: canReplyExternally(detail.session),
       }
 
   return { ...detail.record, session }
@@ -218,7 +227,15 @@ export function projectNativeSessionListPayload(
     if (!session) return [value]
     const sessionId = sessionIdOf(session)
     if (sessionId && nativeSessionIds.has(sessionId)) return []
-    return [{ ...session, native: false, readOnly: true, read_only: true }]
+    const externalReply = canReplyExternally(session)
+    return [{
+      ...session,
+      native: false,
+      readOnly: true,
+      read_only: true,
+      canReplyExternally: externalReply,
+      can_reply_externally: externalReply,
+    }]
   })
   const sessions = [...nativeRows, ...legacyRows]
   return { ...record, sessions, data: sessions }

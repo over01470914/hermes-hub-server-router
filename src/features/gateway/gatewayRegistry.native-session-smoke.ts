@@ -44,6 +44,7 @@ class FakeGatewaySocket extends EventEmitter {
         'health',
         'sessions',
         'session.message',
+        'sessions.externalChannelReply',
         ...(commandPresentation ? ['session.command-presentation'] : []),
         'session.model-selection',
         'session.runtime-controls',
@@ -79,7 +80,8 @@ const globalEvents: GatewayGlobalEvent[] = []
 const runtimeSnapshots: string[] = []
 registry.setSessionEventHandler(event => {
   events.push(event)
-  return event.hermesAgentId === 'agent_native_a' && event.laneId === 'lane_aaaaaaaa'
+  return event.hermesAgentId === 'agent_native_a'
+    && (event.laneId === 'lane_aaaaaaaa' || event.conversationId === 'conv_external_aaaaaaaa')
 })
 registry.setRuntimeSnapshotHandler(snapshot => {
   runtimeSnapshots.push(snapshot.eventId)
@@ -130,6 +132,44 @@ assert.equal(sent.reasoningEffort, 'high')
 assert.equal(sent.fast, false)
 assert.equal(sent.presentation, 'command')
 
+const externalSubmission = registry.submitExternalSessionByAgentId('agent_native_a', {
+  laneId: 'lane_aaaaaaaa',
+  conversationId: 'conv_external_aaaaaaaa',
+  submissionId: 'sub_external_aaaaaaaa',
+  text: '/usage',
+  presentation: 'command',
+})
+const externalFrame = socketA.sent.find(frame => frame.type === 'external_session_submit')
+assert.ok(externalFrame)
+assert.equal(externalFrame.hermesAgentId, undefined)
+assert.equal(externalFrame.laneId, undefined)
+assert.equal(externalFrame.deviceId, undefined)
+assert.equal(externalFrame.conversationId, 'conv_external_aaaaaaaa')
+assert.equal(externalFrame.presentation, 'command')
+socketA.receive({
+  type: 'external_session_submit_ack',
+  id: externalFrame.id,
+  requestType: 'external_session_submit',
+  accepted: true,
+  submissionId: 'sub_external_aaaaaaaa',
+})
+assert.equal((await externalSubmission).accepted, true)
+
+socketA.receive({
+  type: 'session_event',
+  eventId: 'evt_external_delivery_aaaa',
+  gatewayId: 'gw_native_a',
+  hermesAgentId: 'agent_native_a',
+  conversationId: 'conv_external_aaaaaaaa',
+  submissionId: 'sub_external_aaaaaaaa',
+  event: 'session.external_delivery',
+  data: { platform: 'telegram', state: 'delivered' },
+})
+assert.equal(events.at(-1)?.event, 'session.external_delivery')
+assert.equal(events.at(-1)?.laneId, undefined)
+assert.equal(events.at(-1)?.conversationId, 'conv_external_aaaaaaaa')
+const externalEventCount = events.length
+
 socketA.receive({
   type: 'session_event',
   eventId: 'evt_aaaaaaaa',
@@ -142,7 +182,7 @@ socketA.receive({
   data: { role: 'user', content: 'body visible only on the wire' },
   sentAt: Date.now(),
 })
-assert.equal(events.length, 1)
+assert.equal(events.length, externalEventCount + 1)
 
 socketA.receive({
   type: 'session_event',
@@ -156,8 +196,8 @@ socketA.receive({
   data: { delta: 'typed live content' },
   sentAt: Date.now(),
 })
-assert.equal(events.length, 2)
-assert.equal(events[1]?.event, 'message.delta')
+assert.equal(events.length, externalEventCount + 2)
+assert.equal(events.at(-1)?.event, 'message.delta')
 assert.equal(socketA.readyState, 1)
 
 socketA.receive({
@@ -172,8 +212,8 @@ socketA.receive({
   data: { text: 'typed live content', already_streamed: true },
   sentAt: Date.now(),
 })
-assert.equal(events.length, 3)
-assert.equal(events[2]?.event, 'message.interim')
+assert.equal(events.length, externalEventCount + 3)
+assert.equal(events.at(-1)?.event, 'message.interim')
 assert.equal(socketA.readyState, 1)
 
 socketA.receive({
@@ -188,8 +228,8 @@ socketA.receive({
   data: { messageId: 'live-input:sub_aaaaaaaa', text: 'current agent output' },
   sentAt: Date.now(),
 })
-assert.equal(events.length, 4)
-assert.equal(events[3]?.event, 'assistant.live_input')
+assert.equal(events.length, externalEventCount + 4)
+assert.equal(events.at(-1)?.event, 'assistant.live_input')
 assert.equal(socketA.readyState, 1)
 
 socketA.receive({
@@ -204,8 +244,8 @@ socketA.receive({
   data: { messageId: 'msg_review_aaaaaaaa', text: 'Self-improvement review: Updated memory.' },
   sentAt: Date.now(),
 })
-assert.equal(events.length, 5)
-assert.equal(events[4]?.event, 'review.summary')
+assert.equal(events.length, externalEventCount + 5)
+assert.equal(events.at(-1)?.event, 'review.summary')
 assert.equal(socketA.readyState, 1)
 
 socketA.receive({
@@ -220,8 +260,8 @@ socketA.receive({
   data: { running: true, cwd: '/private/host/path' },
   sentAt: Date.now(),
 })
-assert.equal(events.length, 6)
-assert.equal(events[5]?.event, 'session.info')
+assert.equal(events.length, externalEventCount + 6)
+assert.equal(events.at(-1)?.event, 'session.info')
 assert.equal(socketA.readyState, 1)
 
 socketA.receive({
@@ -236,9 +276,9 @@ socketA.receive({
   data: { session_id: 'session_native_a', title: 'Obsidian knowledge sync' },
   sentAt: Date.now(),
 })
-assert.equal(events.length, 7)
-assert.equal(events[6]?.event, 'session.title')
-assert.deepEqual(events[6]?.data, {
+assert.equal(events.length, externalEventCount + 7)
+assert.equal(events.at(-1)?.event, 'session.title')
+assert.deepEqual(events.at(-1)?.data, {
   session_id: 'session_native_a',
   title: 'Obsidian knowledge sync',
 })
@@ -259,8 +299,8 @@ socketA.receive({
   },
   sentAt: Date.now(),
 })
-assert.equal(events.length, 8)
-assert.deepEqual(events[7]?.data, {
+assert.equal(events.length, externalEventCount + 8)
+assert.deepEqual(events.at(-1)?.data, {
   stored_session_id: 'session_native_continuation',
   previous_stored_session_id: 'session_native_a',
 })
@@ -286,8 +326,8 @@ socketA.receive({
   },
   sentAt: Date.now(),
 })
-assert.equal(events.length, 9)
-assert.deepEqual(events[8]?.data, {
+assert.equal(events.length, externalEventCount + 9)
+assert.deepEqual(events.at(-1)?.data, {
   transcript_revision: 'a'.repeat(64),
   head_cursor: 'opaque-head-cursor',
   total_count: 10,

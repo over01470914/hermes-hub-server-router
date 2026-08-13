@@ -15,8 +15,8 @@ export interface NativeConversationRecord {
   lineageSessionIds?: string[]
   lineagePathSessionIds?: string[]
   supersededByConversationId?: string
-  native: true
-  readOnly: false
+  native: boolean
+  readOnly: boolean
   createdAt: string
   updatedAt: string
 }
@@ -72,10 +72,10 @@ export class NativeConversationStore {
   resolveConversation(hermesAgentId: string, conversationId?: string): NativeConversationRecord {
     this.assertAgentId(hermesAgentId)
     if (conversationId) {
-      if (!conversationPattern.test(conversationId)) throw this.validationError('conversationId is invalid')
       const existing = this.getByConversationId(hermesAgentId, conversationId)
-      if (!existing) throw Object.assign(new Error('Native conversation was not found'), { code: 'conversation_not_found', statusCode: 404 })
-      return existing
+      if (existing) return existing
+      if (!conversationPattern.test(conversationId)) throw this.validationError('conversationId is invalid')
+      throw Object.assign(new Error('Native conversation was not found'), { code: 'conversation_not_found', statusCode: 404 })
     }
     const now = new Date().toISOString()
     const created: NativeConversationRecord = {
@@ -84,6 +84,28 @@ export class NativeConversationStore {
       laneId: `lane_${randomUUID()}`,
       native: true,
       readOnly: false,
+      createdAt: now,
+      updatedAt: now,
+    }
+    this.conversations.set(this.conversationKey(hermesAgentId, created.conversationId), created)
+    this.lanes.set(this.laneKey(hermesAgentId, created.laneId), created)
+    this.save()
+    return created
+  }
+
+  adoptExternalSession(hermesAgentId: string, sessionId: string): NativeConversationRecord {
+    this.assertAgentId(hermesAgentId)
+    if (!idPattern.test(sessionId)) throw this.validationError('external session id is invalid')
+    const existing = this.getByConversationId(hermesAgentId, sessionId)
+    if (existing) return existing
+    const now = new Date().toISOString()
+    const created: NativeConversationRecord = {
+      hermesAgentId,
+      conversationId: sessionId,
+      laneId: `lane_${randomUUID()}`,
+      sessionId,
+      native: false,
+      readOnly: true,
       createdAt: now,
       updatedAt: now,
     }
@@ -590,7 +612,11 @@ export class NativeConversationStore {
 
   private cleanConversation(value: unknown): NativeConversationRecord | undefined {
     const record = this.record(value)
-    if (!record || !idPattern.test(String(record.hermesAgentId || '')) || !conversationPattern.test(String(record.conversationId || '')) || !lanePattern.test(String(record.laneId || ''))) return undefined
+    const storedConversationId = String(record?.conversationId || '')
+    const validConversationId = record?.native === false
+      ? idPattern.test(storedConversationId)
+      : conversationPattern.test(storedConversationId)
+    if (!record || !idPattern.test(String(record.hermesAgentId || '')) || !validConversationId || !lanePattern.test(String(record.laneId || ''))) return undefined
     const {
       lineageRootSessionId: _rawLineageRootSessionId,
       lineageSessionIds: _rawLineageSessionIds,

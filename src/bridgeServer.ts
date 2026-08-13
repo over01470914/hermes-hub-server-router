@@ -291,20 +291,29 @@ const pushDispatcher = pushDeviceRegistry && jpushProvider.configured
   : null
 
 gatewayRegistry.setSessionEventHandler(event => {
+  const externalDelivery = event.event === 'session.external_delivery'
+  const mappedConversation = externalDelivery && event.conversationId
+    ? nativeConversationStore.getByConversationId(event.hermesAgentId, event.conversationId)
+    : undefined
+  const localLaneId = mappedConversation?.laneId || event.laneId
+  if (!localLaneId) return false
   const submission = event.submissionId
     ? nativeConversationStore.getSubmission(event.hermesAgentId, event.submissionId)
     : undefined
-  if (event.submissionId && (!submission || submission.laneId !== event.laneId)) return false
+  if (event.submissionId && (!submission || submission.laneId !== localLaneId)) return false
+  if (externalDelivery && (!mappedConversation || submission?.conversationId !== mappedConversation.conversationId)) return false
   const previousSessionId = event.event === 'session.info'
     && typeof event.data.previous_stored_session_id === 'string'
     ? event.data.previous_stored_session_id
     : undefined
-  const conversation = nativeConversationStore.acceptSessionEvent(
-    event.hermesAgentId,
-    event.laneId,
-    event.sessionId,
-    previousSessionId,
-  )
+  const conversation = externalDelivery
+    ? mappedConversation
+    : nativeConversationStore.acceptSessionEvent(
+      event.hermesAgentId,
+      localLaneId,
+      event.sessionId,
+      previousSessionId,
+    )
   if (!conversation) return false
   // A continuation adoption is monotonic for one Router lane.  Consume a
   // delayed parent event without publishing it or moving the conversation's
@@ -325,7 +334,7 @@ gatewayRegistry.setSessionEventHandler(event => {
     const promptId = typeof event.data.promptId === 'string' ? event.data.promptId : ''
     if (!nativeConversationStore.registerPrompt(
       event.hermesAgentId,
-      event.laneId,
+      localLaneId,
       promptId,
       event.sessionId,
     )) return false
@@ -2222,6 +2231,179 @@ async function handleNativeSessionMessage(
   }
 }
 
+async function handleExternalSessionMessage(
+  request: IncomingMessage,
+  response: ServerResponse,
+  payload: BridgeTokenPayload,
+): Promise<void> {
+  requireGatewayBoundBridge(payload)
+  const input = await readJson(request)
+  const allowedKeys = new Set(['submissionId', 'conversationId', 'text', 'presentation'])
+  if (Object.keys(input).some(key => !allowedKeys.has(key))) {
+    logRouter('warn', 'external_submission.rejected', 'Router rejected an external session submission with unsupported fields.', {
+      hermesAgentId: payload.hermesAgentId,
+      errorCode: 'validation_error',
+    })
+    throw Object.assign(new Error('external session submission contains unsupported fields'), {
+      code: 'validation_error',
+      statusCode: 400,
+    })
+  }
+  if (!gatewayAdvertisesCapability(payload.hermesAgentId, 'sessions.externalChannelReply')) {
+    throw Object.assign(new Error('Hermes Hub Gateway does not advertise external session replies'), {
+      code: 'gateway_capability_unavailable',
+      statusCode: 501,
+    })
+  }
+  const submissionId = typeof input.submissionId === 'string' ? input.submissionId.trim() : ''
+  const conversationId = typeof input.conversationId === 'string' ? input.conversationId.trim() : ''
+  const text = typeof input.text === 'string' ? input.text : ''
+  const presentation = input.presentation === undefined
+    ? undefined
+    : input.presentation === 'command'
+      ? 'command'
+      : null
+  if (!/^sub_[A-Za-z0-9._:-]{8,191}$/.test(submissionId) || !conversationId) {
+    throw Object.assign(new Error('external session submission identity is invalid'), {
+      code: 'validation_error', statusCode: 400,
+    })
+  }
+  if (!text.trim() || Buffer.byteLength(text, 'utf8') > 1024 * 1024) {
+    throw Object.assign(new Error('external session text is invalid'), {
+      code: Buffer.byteLength(text, 'utf8') > 1024 * 1024 ? 'body_too_large' : 'validation_error',
+      statusCode: Buffer.byteLength(text, 'utf8') > 1024 * 1024 ? 413 : 400,
+    })
+  }
+  if (presentation === null || (presentation === 'command' && !text.trimStart().startsWith('/'))) {
+    throw Object.assign(new Error('external session presentation is invalid'), {
+      code: 'validation_error', statusCode: 400,
+    })
+  }
+  let externalConversation = nativeConversationStore.getByConversationId(
+    payload.hermesAgentId,
+    conversationId,
+  )
+  if (!externalConversation) {
+    const detail = await proxyViaGateway(
+      payload,
+      `api/sessions/${encodeURIComponent(conversationId)}`,
+      { sourceHeaders: request.headers, timeoutMs: 6_000 },
+    )
+    if (proxiedStatus(detail) < 200 || proxiedStatus(detail) >= 300) {
+      sendGatewayResponse(response, detail.response)
+      return
+    }
+    const projected = projectNativeSessionDetailPayload(
+      jsonPayloadFromProxied(detail),
+    ) as { session?: { canReplyExternally?: unknown } }
+    if (projected.session?.canReplyExternally !== true) {
+      throw Object.assign(new Error('Session is not a supported external-channel conversation'), {
+        code: 'external_session_unsupported',
+        statusCode: 409,
+      })
+    }
+    externalConversation = nativeConversationStore.adoptExternalSession(
+      payload.hermesAgentId,
+      conversationId,
+    )
+  }
+  if (externalConversation.native || !externalConversation.readOnly) {
+    throw Object.assign(new Error('Native sessions must use the native session endpoint'), {
+      code: 'external_session_unsupported',
+      statusCode: 409,
+    })
+  }
+  const begun = nativeConversationStore.beginSubmission(payload.hermesAgentId, submissionId, conversationId)
+  if (begun.duplicate) {
+    if (begun.submission.state === 'accepted') {
+      sendJson(response, 202, {
+        accepted: true,
+        submissionId,
+        conversationId: begun.conversation.conversationId,
+        deliveryState: 'pending',
+        idempotent: true,
+      })
+      return
+    }
+    publishConversationResync(
+      payload.hermesAgentId,
+      begun.conversation.conversationId,
+      begun.conversation.sessionId,
+      submissionId,
+      `external_submission_${begun.submission.state}`,
+    )
+    throw Object.assign(new Error('External submission outcome is ambiguous and will not be resent'), {
+      code: 'submission_ambiguous', statusCode: 409,
+    })
+  }
+  try {
+    const acknowledgement = await gatewayRegistry.submitExternalSessionByAgentId(
+      payload.hermesAgentId,
+      {
+        laneId: begun.conversation.laneId,
+        conversationId: begun.conversation.conversationId,
+        submissionId,
+        text,
+        ...(presentation === 'command' ? { presentation } : {}),
+      },
+      nativeSessionSubmissionTimeoutMs,
+    )
+    if (!acknowledgement.accepted) {
+      const code = acknowledgement.code || 'external_submission_rejected'
+      nativeConversationStore.updateSubmission(payload.hermesAgentId, submissionId, 'failed', { errorCode: code })
+      throw Object.assign(new Error(acknowledgement.error || 'Gateway rejected external session submission'), {
+        code,
+        statusCode: code === 'capability_unsupported' ? 501 : 502,
+      })
+    }
+    const accepted = nativeConversationStore.updateSubmission(
+      payload.hermesAgentId,
+      submissionId,
+      'accepted',
+      acknowledgement.sessionId ? { sessionId: acknowledgement.sessionId } : {},
+    )
+    sendJson(response, 202, {
+      accepted: true,
+      submissionId,
+      conversationId: accepted.conversationId,
+      deliveryState: 'pending',
+    })
+    logRouter('info', 'external_submission.accepted', 'Router accepted an external session submission.', {
+      hermesAgentId: payload.hermesAgentId,
+      submissionId,
+      conversationId: accepted.conversationId,
+      sessionId: accepted.sessionId,
+      nextAction: 'await_external_delivery',
+    })
+  } catch (error) {
+    const code = typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : 'external_submission_failed'
+    if (code === 'gateway_submission_ambiguous') {
+      const ambiguous = nativeConversationStore.updateSubmission(
+        payload.hermesAgentId, submissionId, 'ambiguous', { errorCode: code },
+      )
+      publishConversationResync(
+        payload.hermesAgentId, ambiguous.conversationId, ambiguous.sessionId, submissionId,
+        'gateway_external_submission_ambiguous',
+      )
+      throw Object.assign(new Error('External submission outcome is ambiguous and will not be resent'), {
+        code: 'submission_ambiguous', statusCode: 409,
+      })
+    }
+    if (nativeConversationStore.getSubmission(payload.hermesAgentId, submissionId)?.state === 'pending') {
+      nativeConversationStore.updateSubmission(payload.hermesAgentId, submissionId, 'failed', { errorCode: code })
+    }
+    logRouter('warn', 'external_submission.rejected', 'Router rejected an external session submission.', {
+      hermesAgentId: payload.hermesAgentId,
+      submissionId,
+      conversationId,
+      errorCode: code,
+    })
+    throw error
+  }
+}
+
 function attachmentDataUrl(input: Record<string, unknown>): {
   filename: string
   mimeType: string
@@ -3037,6 +3219,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
             payload.hermesAgentId,
             'sessions.change-events',
           ),
+          externalChannelReply: gatewayAdvertisesCapability(
+            payload.hermesAgentId,
+            'sessions.externalChannelReply',
+          ),
           rename: sessionResourcesAvailable,
           archive: sessionResourcesAvailable,
           delete: sessionResourcesAvailable,
@@ -3121,6 +3307,11 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (pathname === '/bridge/session-messages' && request.method === 'POST') {
     await handleNativeSessionMessage(request, response, payload)
+    return
+  }
+
+  if (pathname === '/bridge/external-session-messages' && request.method === 'POST') {
+    await handleExternalSessionMessage(request, response, payload)
     return
   }
 

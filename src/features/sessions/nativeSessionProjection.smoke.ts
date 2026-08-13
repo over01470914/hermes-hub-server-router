@@ -36,6 +36,7 @@ const projected = projectNativeSessionListPayload({
     {
       id: 'session_legacy_a',
       title: 'Legacy title',
+      origin: { platform: 'telegram' },
     },
   ],
 }, [conversation, staleConversation]) as { sessions: Array<Record<string, unknown>> }
@@ -59,6 +60,7 @@ assert.deepEqual(native.topology, { relation: 'root', childCount: 0 })
 assert.equal(legacy.id, 'session_legacy_a')
 assert.equal(legacy.native, false)
 assert.equal(legacy.readOnly, true)
+assert.equal(legacy.canReplyExternally, true)
 assert.equal(projected.sessions.some(session => session.id === staleConversation.conversationId), false)
 
 const noActivityProjection = projectNativeSessionListPayload({
@@ -161,11 +163,13 @@ const legacyDetail = projectNativeSessionDetailPayload({
   session: {
     id: 'api_legacy_session',
     title: 'Legacy detail',
+    origin: { platform: 'feishu' },
   },
 }) as { session: Record<string, unknown> }
 assert.equal(legacyDetail.session.id, 'api_legacy_session')
 assert.equal(legacyDetail.session.native, false)
 assert.equal(legacyDetail.session.readOnly, true)
+assert.equal(legacyDetail.session.canReplyExternally, true)
 
 console.log(JSON.stringify({
   ok: true,

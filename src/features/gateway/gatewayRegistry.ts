@@ -66,6 +66,19 @@ export interface GatewaySessionSubmit {
   attachmentIds?: string[]
 }
 
+/**
+ * A capability-gated submission for a stored external-channel session.  The
+ * Gateway, not the browser, resolves the channel identity from its authoritative
+ * Hermes session origin.
+ */
+export interface GatewayExternalSessionSubmit {
+  laneId: string
+  conversationId: string
+  submissionId: string
+  text: string
+  presentation?: 'command'
+}
+
 export interface GatewayPromptResponse {
   laneId: string
   promptId: string
@@ -74,7 +87,7 @@ export interface GatewayPromptResponse {
 
 export interface GatewayNativeAck {
   accepted: boolean
-  requestType: 'session_submit' | 'session_prompt_response'
+  requestType: 'session_submit' | 'external_session_submit' | 'session_prompt_response'
   laneId?: string
   submissionId?: string
   sessionId?: string
@@ -87,7 +100,8 @@ export interface GatewaySessionEvent {
   eventId: string
   hermesAgentId: string
   gatewayId: string
-  laneId: string
+  laneId?: string
+  conversationId?: string
   sessionId?: string
   submissionId?: string
   event: string
@@ -637,6 +651,7 @@ const nativeSessionEvents = new Set([
   'processing.started',
   'processing.completed',
   'session.transcript.committed',
+  'session.external_delivery',
   'prompt.requested',
   'prompt.resolved',
   'session.resync_required',
@@ -690,14 +705,14 @@ function cleanNativeAck(value: Record<string, unknown>, pending: PendingNative):
   // A legacy Gateway can reject a valid native request without echoing the
   // Router-owned correlation fields. This cannot be trusted as an ACK, but it
   // is actionable compatibility evidence rather than an identity conflict.
-  if (typeof value.laneId !== 'string' || !value.laneId) {
+  if (pending.requestType !== 'external_session_submit' && (typeof value.laneId !== 'string' || !value.laneId)) {
     throw nativeAckError(
       'Gateway native acknowledgement is missing lane correlation; update the Hermes Hub Gateway and reconnect',
       'gateway_update_required',
       426,
     )
   }
-  if (value.laneId !== pending.laneId) {
+  if (pending.requestType !== 'external_session_submit' && value.laneId !== pending.laneId) {
     throw nativeAckError('Gateway native acknowledgement lane correlation is invalid', 'gateway_native_ack_invalid', 502)
   }
   if (pending.submissionId && (typeof value.submissionId !== 'string' || !value.submissionId)) {
@@ -748,8 +763,15 @@ function cleanSessionEvent(
     ? value.laneId
     : ''
   const event = isNativeSessionEvent(value.event) ? value.event : ''
+  const conversationId = event === 'session.external_delivery'
+    && typeof value.conversationId === 'string'
+    && /^conv_[A-Za-z0-9._:-]{8,191}$/.test(value.conversationId)
+    ? value.conversationId
+    : undefined
   let data = asRecord(value.data)
-  if (!eventId || !laneId || !event || !data) {
+  if (!eventId || !event || !data || (event === 'session.external_delivery'
+    ? (!laneId && !conversationId)
+    : !laneId)) {
     throw new Error('Gateway session event shape is invalid')
   }
   const sessionId = typeof value.sessionId === 'string' && value.sessionId.length <= 256
@@ -802,6 +824,26 @@ function cleanSessionEvent(
       lineage_complete: data.lineage_complete === true,
       committed_at: safeRuntimeNumber(data.committed_at) || Date.now(),
     }
+  } else if (event === 'session.external_delivery') {
+    const platform = typeof data.platform === 'string'
+      && /^(telegram|feishu)$/.test(data.platform)
+      ? data.platform
+      : ''
+    const state = data.state === 'accepted' || data.state === 'delivered' || data.state === 'failed'
+      ? data.state
+      : ''
+    const errorCode = typeof data.errorCode === 'string'
+      && /^[a-z][a-z0-9_:-]{0,119}$/.test(data.errorCode)
+      ? data.errorCode
+      : undefined
+    if (!platform || !state || (state !== 'failed' && errorCode)) {
+      throw new Error('Gateway external delivery event shape is invalid')
+    }
+    data = {
+      platform,
+      state,
+      ...(errorCode ? { errorCode } : {}),
+    }
   }
   const submissionId = typeof value.submissionId === 'string' && /^sub_[A-Za-z0-9._:-]{8,191}$/.test(value.submissionId)
     ? value.submissionId
@@ -810,7 +852,8 @@ function cleanSessionEvent(
     eventId,
     gatewayId: state.gatewayId,
     hermesAgentId: state.hermesAgentId,
-    laneId,
+    ...(laneId ? { laneId } : {}),
+    ...(conversationId ? { conversationId } : {}),
     ...(sessionId ? { sessionId } : {}),
     ...(submissionId ? { submissionId } : {}),
     event,
@@ -1529,7 +1572,6 @@ export class GatewayRegistry {
         laneId: payload.laneId,
         submissionId: payload.submissionId,
         text: payload.text,
-        deviceId: payload.deviceId,
         ...(payload.model ? { model: payload.model } : {}),
         ...(payload.provider ? { provider: payload.provider } : {}),
         ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
@@ -1538,6 +1580,31 @@ export class GatewayRegistry {
           ? { presentation: payload.presentation }
           : {}),
         ...(payload.attachmentIds?.length ? { attachmentIds: payload.attachmentIds } : {}),
+      },
+      { submissionId: payload.submissionId },
+      timeoutMs,
+    )
+  }
+
+  async submitExternalSessionByAgentId(
+    hermesAgentId: string,
+    payload: GatewayExternalSessionSubmit,
+    timeoutMs = 10_000,
+  ): Promise<GatewayNativeAck> {
+    const supportsCommandPresentation = this.gatewayForAgent(
+      hermesAgentId,
+    )?.capabilities?.includes('session.command-presentation') === true
+    return this.nativeRequestByAgentId(
+      hermesAgentId,
+      'external_session_submit',
+      payload.laneId,
+      {
+        conversationId: payload.conversationId,
+        submissionId: payload.submissionId,
+        text: payload.text,
+        ...(payload.presentation === 'command' && supportsCommandPresentation
+          ? { presentation: payload.presentation }
+          : {}),
       },
       { submissionId: payload.submissionId },
       timeoutMs,
@@ -1580,7 +1647,9 @@ export class GatewayRegistry {
     }
     const requiredCapability = requestType === 'session_submit'
       ? 'session.message'
-      : 'session.prompt-response'
+      : requestType === 'external_session_submit'
+        ? 'sessions.externalChannelReply'
+        : 'session.prompt-response'
     if (!state.capabilities?.includes(requiredCapability)) {
       throw Object.assign(new Error(`Gateway capability is unavailable: ${requiredCapability}`), {
         code: 'gateway_capability_unsupported',
@@ -1612,10 +1681,12 @@ export class GatewayRegistry {
     const message = JSON.stringify({ type: requestType, id, ...payload })
     const story = requestType === 'session_submit'
       ? 'session.submit'
-      : 'session.prompt_response'
-    logRouter('info', `${story}.request_sent`, requestType === 'session_submit'
-      ? 'Router dispatched the native session submission to Gateway.'
-      : 'Router dispatched the native prompt response to Gateway.', {
+      : requestType === 'external_session_submit'
+        ? 'external_submission'
+        : 'session.prompt_response'
+    logRouter('info', `${story}.request_sent`, requestType === 'session_prompt_response'
+      ? 'Router dispatched the native prompt response to Gateway.'
+      : 'Router dispatched a capability-gated session submission to Gateway.', {
       hermesAgentId,
       requestId: id,
       requestType,
@@ -1709,7 +1780,7 @@ export class GatewayRegistry {
       state.socket?.close(4401, 'gateway hello required')
       return
     }
-    if (parsed.type === 'session_submit_ack' && typeof parsed.id === 'string') {
+    if ((parsed.type === 'session_submit_ack' || parsed.type === 'external_session_submit_ack') && typeof parsed.id === 'string') {
       const pending = state.pendingNative.get(parsed.id)
       if (!pending) {
         logRouter('warn', 'session.submit.ack_unknown', 'Router ignored a native acknowledgement for an unknown request.', {
@@ -1725,7 +1796,9 @@ export class GatewayRegistry {
         const acknowledgement = cleanNativeAck(parsed, pending)
         const story = acknowledgement.requestType === 'session_submit'
           ? 'session.submit'
-          : 'session.prompt_response'
+          : acknowledgement.requestType === 'external_session_submit'
+            ? 'external_submission'
+            : 'session.prompt_response'
         logRouter(
           acknowledgement.accepted ? 'info' : 'warn',
           acknowledgement.accepted ? `${story}.accepted` : `${story}.failed`,
